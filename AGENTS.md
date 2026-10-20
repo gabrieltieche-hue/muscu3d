@@ -367,6 +367,18 @@ recalculés par **enveloppe convexe** de la tranche (le tri angulaire créait de
 zigzags) ; plan de coupe **recentré sur la géométrie réelle** du membre.
 
 Captures de validation : `docs/etat-2026-10-20/`.
+**Correctif de la session 2 bis — aisselles déchirées.** Le partage de la peau
+entre le bras et le torse était fait par une bande radiale (0,07 → 0,115 autour
+de l'axe du bras) : trop large, elle entrainait le torse avec le bras et
+déchirait l'aisselle (trous visibles, arêtes en dents de scie). Remplacé par un
+**vrai partage par poids de peau** (mêmes gaussiennes que `lib/body.ts` :
+os du bras d'un côté, os du thorax de l'autre, poids = part du bras dans le
+total). Même traitement pour les jambes (bassin + autre jambe côté tronc), sinon
+c'est l'entre-jambes qui se déchire. Enfin, un **lissage de relaxation** (2
+itérations, facteur 0,35) est appliqué aux seuls sommets de transition
+(aisselle, entre-jambes) : ces zones étaient comprimées par la déformation et
+formaient une fente sombre.
+
 
 ## 4. Bugs connus, causes identifiées
 

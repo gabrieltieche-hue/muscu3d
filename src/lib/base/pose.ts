@@ -51,6 +51,24 @@ function rotationBetween(a: THREE.Vector3, b: THREE.Vector3): THREE.Quaternion {
   return new THREE.Quaternion().setFromUnitVectors(a.clone().normalize(), b.clone().normalize())
 }
 
+/** Poids de peau gaussien d'un os (même convention que lib/body.ts). */
+function boneWeight(p: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3, sigma: number): number {
+  const abx = b.x - a.x
+  const aby = b.y - a.y
+  const abz = b.z - a.z
+  const len2 = abx * abx + aby * aby + abz * abz
+  let t = 0
+  if (len2 > 1e-12) {
+    t = ((p.x - a.x) * abx + (p.y - a.y) * aby + (p.z - a.z) * abz) / len2
+    t = Math.max(0, Math.min(1, t))
+  }
+  const dx = p.x - (a.x + abx * t)
+  const dy = p.y - (a.y + aby * t)
+  const dz = p.z - (a.z + abz * t)
+  const d = Math.sqrt(dx * dx + dy * dy + dz * dz) / sigma
+  return Math.exp(-d * d)
+}
+
 /** Applique une rotation autour d'un pivot à des positions brutes. */
 function rotatePoints(positions: Float32Array, q: THREE.Quaternion, pivot: THREE.Vector3, weightOf: (i: number) => number) {
   const v = new THREE.Vector3()
@@ -107,7 +125,6 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
   if (strength <= 0) return joints
 
   const src = new Float32Array(positions)
-  const sideSign = (side: 'l' | 'r') => (side === 'l' ? 1 : -1)
 
   /**
    * Les cibles MakeHuman déplacent les sommets AVANT la pose : l'axe du bras
@@ -134,6 +151,24 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
     }
     return new THREE.Vector3(src[bi], src[bi + 1], src[bi + 2])
   }
+
+  const sideSign = (side: 'l' | 'r') => (side === 'l' ? 1 : -1)
+  // poids de transition (aisselle, entre-jambes) : ces sommets sont
+  // comprimés par la déformation, on les lissera à la fin
+  const transition = new Float32Array(positions.length / 3)
+
+  /**
+   * Os du torse (repères pris sur la géométrie morphée) : ils servent à
+   * partager la peau entre le bras et le tronc. Sans ce partage, l'aisselle
+   * se déchire : les sommets du bras partaient à 100 % avec le bras pendant
+   * que ceux du torse restaient en place.
+   */
+  const spine1 = nearestOf('spine-1')
+  const spine2 = nearestOf('spine-2')
+  const spine3 = nearestOf('spine-3')
+  const spine4 = nearestOf('spine-4')
+  const pelvisJ = nearestOf('pelvis')
+  const neckJ = nearestOf('neck')
 
   for (const side of ['l', 'r'] as const) {
     const s = sideSign(side)
@@ -167,6 +202,23 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
     }
     const pathRest = makePath([shoulder, elbow0, hand0])
     const pathTarget = makePath([shoulder, elbow2, hand2])
+
+    // Os : bras d'un côté, torse de l'autre. Le poids d'un sommet pour le bras
+    // est la part du bras dans le total (bras + torse) : l'aisselle, qui est
+    // à égale distance des deux, est ainsi entraînée à moitié et ne se
+    // déchire plus.
+    const armBones: Array<[THREE.Vector3, THREE.Vector3, number]> = [
+      [shoulder, elbow0, 0.034],
+      [elbow0, hand0, 0.032],
+      [hand0, hand0.clone().addScaledVector(foreOut, 0.1), 0.028],
+    ]
+    const torsoBones: Array<[THREE.Vector3, THREE.Vector3, number]> = [
+      [spine1, neckJ, 0.085],
+      [spine2, spine1, 0.08],
+      [spine3, spine2, 0.08],
+      [spine4, spine3, 0.075],
+      [pelvisJ, spine4, 0.075],
+    ]
 
     /** Point sur la polyligne à l'abscisse curviligne s. */
     const pathPoint = (path: ReturnType<typeof makePath>, s: number) => {
@@ -243,6 +295,11 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
       const rp = pathPoint(pathRest, sc)
       const tp = pathPoint(pathTarget, sc)
       q.setFromUnitVectors(pathTangent(pathRest, sc), pathTangent(pathTarget, sc))
+      // partage de la peau : part du bras dans le total (bras + torse)
+      let wArm = 0
+      for (const [ba, bb, sg] of armBones) wArm += boneWeight(v, ba, bb, sg)
+      let wTorso = 0
+      for (const [ba, bb, sg] of torsoBones) wTorso += boneWeight(v, ba, bb, sg)
       let w: number
       if (pr.beyond) {
         // main : bloc rigide suivant le poignet. Le rayon doit couvrir les
@@ -250,9 +307,10 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
         // pose en A et le maillage se déchirait.
         w = (1 - smoothstep(0.15, 0.28, pr.distWrist)) * wStart
       } else {
-        w = (1 - smoothstep(0.07, 0.115, pr.dist)) * wStart
+        w = (wArm / Math.max(wArm + wTorso, 1e-6)) * wStart
       }
       w *= strength
+      if (w > 0.02 && w < 0.98) transition[i / 3] = Math.max(transition[i / 3], 1 - Math.abs(w - 0.5) * 2)
       if (w <= 0.002) continue
       off.copy(v).sub(rp).applyQuaternion(q)
       const nx = tp.x + off.x
@@ -342,10 +400,41 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
     // plante du pied reste à plat et pointe toujours vers l'avant.
     const hip = nearestOf(`${side}-upper-leg`)
     const ankleRest = nearestOf(`${side}-ankle`)
+    const knee0 = nearestOf(`${side}-knee`)
+    const toe0 = nearestOf(`${side}-foot-1`)
+    const otherSide = side === 'l' ? 'r' : 'l'
+    const otherHip = nearestOf(`${otherSide}-upper-leg`)
+    const otherKnee = nearestOf(`${otherSide}-knee`)
+    const otherAnkle = nearestOf(`${otherSide}-ankle`)
+    // os : la jambe d'un côté, le bassin + l'autre jambe de l'autre
+    const legBones: Array<[THREE.Vector3, THREE.Vector3, number]> = [
+      [hip, knee0, 0.055],
+      [knee0, ankleRest, 0.045],
+      [ankleRest, toe0, 0.035],
+    ]
+    const pelvisBones: Array<[THREE.Vector3, THREE.Vector3, number]> = [
+      [pelvisJ, spine4, 0.075],
+      [spine4, spine3, 0.075],
+      [otherHip, otherKnee, 0.055],
+      [otherKnee, otherAnkle, 0.045],
+    ]
     const legRest = ankleRest.clone().sub(hip).normalize()
     const q3 = rotationBetween(legRest, thighOut)
-    const wLeg = limbWeight(src, hip, legRest, 0.105, 0.17, -0.02, 0.07)
-    rotatePoints(positions, q3, hip, (i) => wLeg(i) * strength)
+    // même partage de peau que pour le bras : la cuisse appartient à la jambe,
+    // le bassin et l'autre jambe au tronc (sinon l'entre-jambes se déchire)
+    const wLeg = (i: number) => {
+      const p = new THREE.Vector3(src[i], src[i + 1], src[i + 2])
+      let wLegB = 0
+      for (const [ba, bb, sg] of legBones) wLegB += boneWeight(p, ba, bb, sg)
+      let wPelv = 0
+      for (const [ba, bb, sg] of pelvisBones) wPelv += boneWeight(p, ba, bb, sg)
+      return wLegB / Math.max(wLegB + wPelv, 1e-6)
+    }
+    rotatePoints(positions, q3, hip, (i) => {
+      const w = wLeg(i) * strength
+      if (w > 0.02 && w < 0.98) transition[i / 3] = Math.max(transition[i / 3], 1 - Math.abs(w - 0.5) * 2)
+      return w
+    })
 
     for (const key of [`${side}-knee`, `${side}-ankle`, `${side}-foot-1`, `${side}-foot-2`]) {
       if (!joints[key]) continue
@@ -363,6 +452,59 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
       for (const key of [`${side}-foot-1`, `${side}-foot-2`]) {
         if (!joints[key]) continue
         joints[key] = rotatePoint(joints[key], qYaw, ankle)
+      }
+    }
+  }
+
+  // Lissage des plis : l'aisselle et l'entre-jambes sont des zones où la
+  // peau est partagée entre deux membres ; la déformation y comprime les
+  // sommets et crée une fente sombre. On relaxe ces sommets uniquement
+  // (2 itérations, relaxation faible : au-delà, le maillage se déchire).
+  if (strength > 0) {
+    const { indices } = getBaseMesh()
+    const n = positions.length / 3
+    const isActive = new Uint8Array(n)
+    let count = 0
+    for (let i = 0; i < n; i++) {
+      if (transition[i] > 0.15) {
+        isActive[i] = 1
+        count++
+      }
+    }
+    if (count) {
+      for (let iter = 0; iter < 2; iter++) {
+        const copy = new Float32Array(positions)
+        const acc = new Float32Array(positions.length)
+        const cnt = new Uint16Array(n)
+        for (let t = 0; t < indices.length; t += 3) {
+          const a = indices[t]
+          const b = indices[t + 1]
+          const c = indices[t + 2]
+          // laplacien de a : (b + c - 2a)
+          if (isActive[a]) {
+            for (let k = 0; k < 3; k++) {
+              acc[a * 3 + k] += copy[b * 3 + k] + copy[c * 3 + k] - 2 * copy[a * 3 + k]
+            }
+            cnt[a]++
+          }
+          if (isActive[b]) {
+            for (let k = 0; k < 3; k++) {
+              acc[b * 3 + k] += copy[c * 3 + k] + copy[a * 3 + k] - 2 * copy[b * 3 + k]
+            }
+            cnt[b]++
+          }
+          if (isActive[c]) {
+            for (let k = 0; k < 3; k++) {
+              acc[c * 3 + k] += copy[a * 3 + k] + copy[b * 3 + k] - 2 * copy[c * 3 + k]
+            }
+            cnt[c]++
+          }
+        }
+        for (let i = 0; i < n; i++) {
+          if (!cnt[i]) continue
+          const w = 0.35 * transition[i]
+          for (let k = 0; k < 3; k++) positions[i * 3 + k] += (acc[i * 3 + k] / cnt[i]) * w
+        }
       }
     }
   }
