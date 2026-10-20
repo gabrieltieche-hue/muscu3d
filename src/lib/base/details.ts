@@ -449,8 +449,8 @@ function armGrooves3D(ctx: AnatomyContext): Groove3D[] {
         sh.clone().lerp(el, 0.45).addScaledVector(lat, 0.043),
         el.clone().addScaledVector(lat, 0.032),
       ],
-      width: 0.008,
-      depth: 0.0042,
+      width: 0.0095,
+      depth: 0.0062,
       region: (i, c) => c.masks.arm[i],
     })
     // creux sous le deltoïde (ligne brachio-deltoïdienne)
@@ -459,8 +459,8 @@ function armGrooves3D(ctx: AnatomyContext): Groove3D[] {
         sh.clone().addScaledVector(lat, 0.045).add(new THREE.Vector3(0, -0.004, 0.014)),
         sh.clone().lerp(el, 0.2).addScaledVector(lat, 0.036).add(new THREE.Vector3(0, 0, 0.018)),
       ],
-      width: 0.008,
-      depth: 0.0028,
+      width: 0.009,
+      depth: 0.004,
       region: (i, c) => Math.max(c.masks.delt[i], c.masks.arm[i] * 0.6),
     })
   }
