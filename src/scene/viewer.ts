@@ -21,15 +21,15 @@ export class Viewer {
     this.renderer = new THREE.WebGLRenderer({ antialias: true })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.renderer.setSize(container.clientWidth || 800, container.clientHeight || 600)
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 0.95
+    this.renderer.toneMapping = THREE.NeutralToneMapping
+    this.renderer.toneMappingExposure = 0.66
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     container.appendChild(this.renderer.domElement)
 
     this.scene.background = this.gradientBackground()
     this.pmrem = new THREE.PMREMGenerator(this.renderer)
     this.scene.environment = this.pmrem.fromScene(new RoomEnvironment(), 0.04).texture
-    this.scene.environmentIntensity = 0.4
+    this.scene.environmentIntensity = 0.5
 
     const w = container.clientWidth || 800
     const h = container.clientHeight || 600
@@ -37,7 +37,7 @@ export class Viewer {
     this.camera.position.set(1.9, 1.42, 3.4)
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement)
-    this.controls.target.set(0, 0.92, 0)
+    this.controls.target.set(0, 0.9, 0)
     this.controls.enableDamping = true
     this.controls.dampingFactor = 0.08
     this.controls.minDistance = 1.0
@@ -47,35 +47,28 @@ export class Viewer {
     this.controls.autoRotateSpeed = 1.0
     this.controls.update()
 
-    // lumières studio
-    this.scene.add(new THREE.HemisphereLight(0xe9f2ff, 0x14171c, 0.38))
+    // lumières studio : clé douce, fill large, rim discret (sculpture)
+    this.scene.add(new THREE.HemisphereLight(0xf4f5f7, 0x8d8b87, 0.26))
 
-    const key = new THREE.DirectionalLight(0xfff1e0, 2.5)
-    key.position.set(3.1, 3.4, 1.5)
+    const key = new THREE.DirectionalLight(0xfffaf2, 1.85)
+    key.position.set(2.5, 2.5, 1.9)
     this.scene.add(key)
 
-    const fill = new THREE.DirectionalLight(0xccdcff, 0.42)
-    fill.position.set(-3.0, 1.2, 2.4)
+    const fill = new THREE.DirectionalLight(0xeef1ff, 0.16)
+    fill.position.set(-3.2, 1.6, 1.8)
     this.scene.add(fill)
 
-    const rim = new THREE.DirectionalLight(0x9dc5ff, 2.8)
-    rim.position.set(-1.8, 2.4, -3.0)
+    const rim = new THREE.DirectionalLight(0xffffff, 0.95)
+    rim.position.set(-1.2, 2.6, -3.2)
     this.scene.add(rim)
 
-    // socle
+    // socle : cylindre clay à bord biseauté, même matière que le corps
     const pedestal = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.5, 0.525, 0.05, 96, 1),
-      new THREE.MeshStandardMaterial({ color: 0x262b33, roughness: 0.62, metalness: 0.18 }),
+      new THREE.CylinderGeometry(0.54, 0.56, 0.045, 128, 1),
+      new THREE.MeshStandardMaterial({ color: 0x87847e, roughness: 0.9, metalness: 0 }),
     )
-    pedestal.position.y = -0.022
+    pedestal.position.y = -0.0225
     this.scene.add(pedestal)
-
-    const edge = new THREE.Mesh(
-      new THREE.TorusGeometry(0.5, 0.0022, 8, 96).rotateX(Math.PI / 2),
-      new THREE.MeshStandardMaterial({ color: 0x6d7684, roughness: 0.35, metalness: 0.6 }),
-    )
-    edge.position.y = 0.003
-    this.scene.add(edge)
 
     // ombre de contact douce
     const shadowTex = this.contactShadow()
@@ -84,19 +77,19 @@ export class Viewer {
       new THREE.MeshBasicMaterial({
         map: shadowTex,
         transparent: true,
-        opacity: 0.62,
+        opacity: 0.5,
         depthWrite: false,
       }),
     )
     contact.position.set(0, 0.0036, 0.02)
     this.scene.add(contact)
 
-    // anneau d'accent (couleur = mode actif)
+    // anneau d'accent (couleur = mode actif) : très discret sur le socle
     this.ring = new THREE.Mesh(
-      new THREE.RingGeometry(0.4, 0.407, 96).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.55 }),
+      new THREE.RingGeometry(0.44, 0.444, 96).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: 0x8d9aa4, transparent: true, opacity: 0.1 }),
     )
-    this.ring.position.y = 0.0042
+    this.ring.position.y = 0.0006
     this.scene.add(this.ring)
 
     this.scene.add(this.pivot)
@@ -111,10 +104,10 @@ export class Viewer {
     c.width = 1024
     c.height = 1024
     const ctx = c.getContext('2d')!
-    const g = ctx.createRadialGradient(512, 400, 40, 512, 470, 760)
-    g.addColorStop(0, '#222932')
-    g.addColorStop(0.45, '#151b22')
-    g.addColorStop(1, '#07090c')
+    const g = ctx.createRadialGradient(512, 380, 30, 512, 470, 780)
+    g.addColorStop(0, '#8b8b8b')
+    g.addColorStop(0.55, '#7b7b7b')
+    g.addColorStop(1, '#616161')
     ctx.fillStyle = g
     ctx.fillRect(0, 0, 1024, 1024)
     const tex = new THREE.CanvasTexture(c)
@@ -128,10 +121,10 @@ export class Viewer {
     c.height = 512
     const ctx = c.getContext('2d')!
     const g = ctx.createRadialGradient(256, 256, 10, 256, 256, 250)
-    g.addColorStop(0, 'rgba(0,0,0,0.95)')
-    g.addColorStop(0.35, 'rgba(0,0,0,0.55)')
-    g.addColorStop(0.7, 'rgba(0,0,0,0.16)')
-    g.addColorStop(1, 'rgba(0,0,0,0)')
+    g.addColorStop(0, 'rgba(30,28,26,0.55)')
+    g.addColorStop(0.35, 'rgba(30,28,26,0.28)')
+    g.addColorStop(0.7, 'rgba(30,28,26,0.08)')
+    g.addColorStop(1, 'rgba(30,28,26,0)')
     ctx.fillStyle = g
     ctx.fillRect(0, 0, 512, 512)
     const tex = new THREE.CanvasTexture(c)
@@ -180,12 +173,12 @@ export class Viewer {
   }
 
   setCameraPreset(p: 'face' | 'profil' | 'dos' | 'troisquarts') {
-    const target = new THREE.Vector3(0, 0.92, 0)
+    const target = new THREE.Vector3(0, 0.9, 0)
     const pos = {
-      face: new THREE.Vector3(0, 1.02, 3.55),
-      profil: new THREE.Vector3(3.55, 1.02, 0),
-      dos: new THREE.Vector3(0, 1.02, -3.55),
-      troisquarts: new THREE.Vector3(1.9, 1.42, 3.4),
+      face: new THREE.Vector3(0, 1.0, 4.0),
+      profil: new THREE.Vector3(4.0, 1.0, 0),
+      dos: new THREE.Vector3(0, 1.0, -4.0),
+      troisquarts: new THREE.Vector3(3.25, 1.28, 2.75),
     }[p]
     this.camera.position.copy(pos)
     this.controls.target.copy(target)

@@ -1,10 +1,16 @@
 import * as THREE from 'three'
-import { ellipseCirc, ellipsoid, loftRings, signedVolume, smoothstep, type LoftRing } from './geometry'
+import { getPosedBase, posePositions } from './base/pose'
+import { getBaseMesh, geometryFromPositions } from './base/mesh'
+import { applyTarget } from './base/morph'
+import { buildGenitals, findPubis } from './base/genitals'
+import { applyAnatomy, applyBumpNormals } from './base/details'
 
 /**
- * Vecteur d'état corporel : c'est LUI le vrai moteur.
- * L'avatar 3D n'est qu'une projection visuelle de ce vecteur.
+ * Moteur de morphing : le vecteur corporel BodyParams pilote des déformations
+ * du mesh de base. Le maillage n'est qu'une projection du vecteur — il ne
+ * contient aucune donnée de vérité.
  */
+
 export interface BodyParams {
   /** taille en cm */
   height: number
@@ -25,20 +31,24 @@ export interface BodyParams {
   forearms: number
 }
 
+/**
+ * Valeurs par défaut : homme jeune sec et sportif (référence visuelle §1bis).
+ * L'amplitude des muscles est calée sur les cibles MakeHuman : 45 = neutre.
+ */
 export const DEFAULT_PARAMS: BodyParams = {
   height: 175,
-  fat: 18,
-  belly: 30,
-  neck: 45,
-  shoulders: 45,
-  lats: 45,
-  pecs: 45,
-  abs: 45,
-  glutes: 45,
-  thighs: 45,
-  calves: 45,
-  arms: 45,
-  forearms: 45,
+  fat: 12,
+  belly: 16,
+  neck: 60,
+  shoulders: 78,
+  lats: 76,
+  pecs: 80,
+  abs: 74,
+  glutes: 60,
+  thighs: 72,
+  calves: 62,
+  arms: 76,
+  forearms: 62,
 }
 
 export const PRESETS: Record<string, Omit<BodyParams, 'height'>> = {
@@ -58,76 +68,412 @@ export interface BodyMetrics {
 }
 
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v))
-/** 0-100 → -1..1 */
 const nn = (v: number) => (v - 50) / 50
-
-/** Bande d'influence douce : 1 entre lo et hi, retombe sur fade. */
-const band = (y: number, lo: number, hi: number, fade = 0.04) => {
-  if (y < lo - fade || y > hi + fade) return 0
-  return Math.min(smoothstep(lo - fade, lo, y), 1 - smoothstep(hi, hi + fade, y))
+const smoothstep = (a: number, b: number, x: number) => {
+  const t = clamp((x - a) / (b - a), 0, 1)
+  return t * t * (3 - 2 * t)
 }
+const gauss = (x: number, mu: number, sigma: number) => Math.exp(-(((x - mu) / sigma) ** 2))
 
-const BODY_MAT = new THREE.MeshPhysicalMaterial({
-  color: 0xbdb3a6,
-  roughness: 0.56,
-  metalness: 0,
-  clearcoat: 0.12,
-  clearcoatRoughness: 0.6,
-})
-const WIRE_MAT = new THREE.MeshBasicMaterial({
-  color: 0x9af0cf,
-  wireframe: true,
-  transparent: true,
-  opacity: 0.14,
-  depthWrite: false,
-})
+// ---------------------------------------------------------------------------
+// Couches MakeHuman : poids déduits du vecteur corporel.
+// ---------------------------------------------------------------------------
 
-interface TorsoSection {
-  y: number
-  rx: number
-  rzF: number
-  rzB: number
-  z: number
-  gF: number
-  gB: number
-}
-
-/** Référence : homme de 1,75 m, 18 % de gras, muscles moyens. */
-const TORSO_BASE: TorsoSection[] = [
-  { y: 0.47, rx: 0.058, rzF: 0.038, rzB: 0.05, z: 0.0, gF: 0, gB: 0.03 },
-  { y: 0.49, rx: 0.075, rzF: 0.048, rzB: 0.066, z: 0.0, gF: 0, gB: 0.045 },
-  { y: 0.51, rx: 0.09, rzF: 0.054, rzB: 0.078, z: 0.0, gF: 0, gB: 0.06 },
-  { y: 0.53, rx: 0.1, rzF: 0.057, rzB: 0.09, z: 0.0, gF: 0, gB: 0.075 },
-  { y: 0.548, rx: 0.1, rzF: 0.058, rzB: 0.088, z: 0.0, gF: 0, gB: 0.06 },
-  { y: 0.566, rx: 0.095, rzF: 0.057, rzB: 0.078, z: 0.002, gF: 0, gB: 0.04 },
-  { y: 0.588, rx: 0.089, rzF: 0.055, rzB: 0.068, z: 0.003, gF: 0.012, gB: 0.03 },
-  { y: 0.612, rx: 0.087, rzF: 0.054, rzB: 0.064, z: 0.004, gF: 0.02, gB: 0.026 },
-  { y: 0.638, rx: 0.088, rzF: 0.054, rzB: 0.063, z: 0.005, gF: 0.026, gB: 0.024 },
-  { y: 0.664, rx: 0.092, rzF: 0.056, rzB: 0.064, z: 0.007, gF: 0.03, gB: 0.022 },
-  { y: 0.69, rx: 0.099, rzF: 0.061, rzB: 0.066, z: 0.009, gF: 0.03, gB: 0.02 },
-  { y: 0.714, rx: 0.106, rzF: 0.064, rzB: 0.068, z: 0.012, gF: 0.034, gB: 0.018 },
-  { y: 0.736, rx: 0.112, rzF: 0.074, rzB: 0.069, z: 0.014, gF: 0.06, gB: 0.016 },
-  { y: 0.755, rx: 0.115, rzF: 0.073, rzB: 0.068, z: 0.012, gF: 0.066, gB: 0.014 },
-  { y: 0.773, rx: 0.115, rzF: 0.068, rzB: 0.067, z: 0.01, gF: 0.05, gB: 0.012 },
-  { y: 0.791, rx: 0.112, rzF: 0.062, rzB: 0.064, z: 0.007, gF: 0.02, gB: 0.01 },
-  { y: 0.808, rx: 0.106, rzF: 0.057, rzB: 0.06, z: 0.004, gF: 0, gB: 0.006 },
-  { y: 0.822, rx: 0.092, rzF: 0.052, rzB: 0.055, z: 0.003, gF: 0, gB: 0 },
-  { y: 0.834, rx: 0.064, rzF: 0.046, rzB: 0.049, z: 0.002, gF: 0, gB: 0 },
-  { y: 0.846, rx: 0.048, rzF: 0.038, rzB: 0.041, z: 0.002, gF: 0, gB: 0 },
-  { y: 0.858, rx: 0.0376, rzF: 0.033, rzB: 0.035, z: 0.003, gF: 0, gB: 0 },
-  { y: 0.872, rx: 0.034, rzF: 0.031, rzB: 0.033, z: 0.004, gF: 0, gB: 0 },
-  { y: 0.888, rx: 0.0325, rzF: 0.03, rzB: 0.032, z: 0.004, gF: 0, gB: 0 },
-]
+export type LayerWeights = Record<string, number>
 
 /**
- * Construit l'avatar à partir du vecteur corporel, et estime les mensurations
- * correspondantes (en cm). Objectif : un mannequin crédible, lissé, avec des
- * articulations fondues — pas une figurine low-poly.
+ * Traduit BodyParams en poids de cibles MakeHuman.
+ * 0,55 de muscle global = homme jeune moyen ; 1 = maxmuscle.
+ * Une valeur locale de 45 = morphologie neutre (référence des sliders).
  */
-export function buildBody(p: BodyParams): { group: THREE.Group; metrics: BodyMetrics } {
+export function getLayerWeights(p: BodyParams): LayerWeights {
+  const avgMuscle = (p.shoulders + p.lats + p.pecs + p.arms + p.thighs + p.calves + p.neck) / 7
+  const m01 = clamp(0.55 + ((avgMuscle - 45) / 43) * 0.6, 0, 1)
+  const w01 = clamp(0.5 + ((p.fat - 14) / 24) * 0.5, 0.04, 1)
+  const local = (v: number, k = 0.9) => clamp(((v - 45) / 55) * k, -0.35, 1)
+  // graisse segmentaire : nulle sous 14 % de masse grasse
+  const fatSeg = clamp((p.fat - 14) / 18, 0, 1) * 0.9
+
+  return {
+    male: 1,
+    muscleMax: clamp(2 * m01 - 1, 0, 1),
+    muscleMin: clamp(1 - 2 * m01, 0, 1),
+    weightMax: clamp(2 * w01 - 1, 0, 1),
+    weightMin: clamp(1 - 2 * w01, 0, 1),
+    vshape: local(p.lats, 0.9),
+    pectoral: local(p.pecs, 1.0),
+    dorsi: local(p.lats, 0.7),
+    shoulderDist: local(p.shoulders, 0.7),
+    upperarm: local(p.arms, 1.0),
+    thigh: local(p.thighs, 1.0),
+    calf: local(p.calves, 1.0),
+    neck: local(p.neck, 0.8),
+    neckWide: local(p.neck, 0.5),
+    waistIn: local(p.lats, 0.5),
+    stomachTone: local(p.abs, 0.7),
+    pelvisTone: local(p.abs, 0.35),
+    buttocks: local(p.glutes, 0.8),
+    // --- bras : muscle par segment, graisse par segment ---
+    upperarmMuscleL: local(p.arms, 0.9),
+    upperarmMuscleR: local(p.arms, 0.9),
+    lowerarmMuscleL: local(p.forearms, 0.9),
+    lowerarmMuscleR: local(p.forearms, 0.9),
+    upperarmFatL: fatSeg,
+    upperarmFatR: fatSeg,
+    lowerarmFatL: fatSeg,
+    lowerarmFatR: fatSeg,
+    // --- jambes ---
+    upperlegMuscleL: local(p.thighs, 0.85),
+    upperlegMuscleR: local(p.thighs, 0.85),
+    lowerlegMuscleL: local(p.calves, 0.85),
+    lowerlegMuscleR: local(p.calves, 0.85),
+    // --- pieds : plus petits et plus étroits que le mesh de base ---
+    footScaleL: 0.55,
+    footScaleR: 0.55,
+    footHorizL: 0.4,
+    footHorizR: 0.4,
+  }
+}
+
+/** Surcharge de debug : ?morph=male:1,muscleMax:1 */
+function debugLayerWeights(): LayerWeights | null {
+  if (typeof location === 'undefined') return null
+  const raw = new URLSearchParams(location.search).get('morph')
+  if (!raw) return null
+  const out: LayerWeights = {}
+  for (const part of raw.split(',')) {
+    const [k, v] = part.split(':')
+    if (k && v !== undefined && Number.isFinite(Number(v))) out[k] = Number(v)
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// Squelette logiciel : segments issus des repères du mesh de base.
+// ---------------------------------------------------------------------------
+
+interface Bone {
+  key: string
+  a: THREE.Vector3
+  b: THREE.Vector3
+  sigma: number
+}
+
+let bonesCache: Bone[] | null = null
+
+function getBones(): Bone[] {
+  if (bonesCache) return bonesCache
+  const { joints } = getPosedBase()
+  const j = (name: string) => joints[name]
+  const list: Bone[] = [
+    { key: 'pelvis', a: j('pelvis'), b: j('spine-4'), sigma: 0.075 },
+    { key: 'spine4', a: j('spine-4'), b: j('spine-3'), sigma: 0.075 },
+    { key: 'spine3', a: j('spine-3'), b: j('spine-2'), sigma: 0.08 },
+    { key: 'spine2', a: j('spine-2'), b: j('spine-1'), sigma: 0.08 },
+    { key: 'chest', a: j('spine-1'), b: j('neck'), sigma: 0.085 },
+    { key: 'neck', a: j('neck'), b: j('head'), sigma: 0.045 },
+    { key: 'head', a: j('head'), b: j('head-2'), sigma: 0.075 },
+  ]
+  for (const side of ['l', 'r'] as const) {
+    const s = side === 'l' ? 1 : -1
+    const mirror = (name: string) => {
+      const p = j(name)
+      return new THREE.Vector3(s === 1 ? p.x : -p.x, p.y, p.z)
+    }
+    const suf = side === 'l' ? 'L' : 'R'
+    list.push(
+      { key: `clav${suf}`, a: mirror('l-clavicle'), b: mirror('l-shoulder'), sigma: 0.045 },
+      { key: `uarm${suf}`, a: mirror('l-shoulder'), b: mirror('l-elbow'), sigma: 0.034 },
+      { key: `farm${suf}`, a: mirror('l-elbow'), b: mirror('l-hand'), sigma: 0.032 },
+      { key: `hand${suf}`, a: mirror('l-hand'), b: mirror('l-finger-3-2'), sigma: 0.028 },
+      { key: `uleg${suf}`, a: mirror('l-upper-leg'), b: mirror('l-knee'), sigma: 0.055 },
+      { key: `lleg${suf}`, a: mirror('l-knee'), b: mirror('l-ankle'), sigma: 0.045 },
+      { key: `foot${suf}`, a: mirror('l-ankle'), b: mirror('l-foot-1'), sigma: 0.035 },
+    )
+  }
+  bonesCache = list
+  return list
+}
+
+function distToSegment(p: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): { d: number; t: number } {
+  const abx = b.x - a.x
+  const aby = b.y - a.y
+  const abz = b.z - a.z
+  const apx = p.x - a.x
+  const apy = p.y - a.y
+  const apz = p.z - a.z
+  const denom = abx * abx + aby * aby + abz * abz || 1e-9
+  const t = clamp((apx * abx + apy * aby + apz * abz) / denom, 0, 1)
+  const dx = apx - abx * t
+  const dy = apy - aby * t
+  const dz = apz - abz * t
+  return { d: Math.sqrt(dx * dx + dy * dy + dz * dz), t }
+}
+
+// ---------------------------------------------------------------------------
+// Masques de déformation (calculés une fois, réutilisés à chaque morphing).
+// ---------------------------------------------------------------------------
+
+export interface Masks {
+  fat: Float32Array
+  belly: Float32Array
+  glute: Float32Array
+  pec: Float32Array
+  lat: Float32Array
+  abs: Float32Array
+  trap: Float32Array
+  delt: Float32Array
+  arm: Float32Array
+  fore: Float32Array
+  thigh: Float32Array
+  calf: Float32Array
+  /** signe du côté (x) pour les déformations latérales */
+  side: Float32Array
+  torso: Float32Array
+}
+
+let masksCache: Masks | null = null
+
+export function getMasks(): Masks {
+  if (masksCache) return masksCache
+  const { positions } = getPosedBase()
+  const bones = getBones()
+  const n = positions.length / 3
+  const nb = bones.length
+  const W = new Float32Array(n * nb)
+  const T = new Float32Array(n * nb)
+  const tmp = new THREE.Vector3()
+  for (let i = 0; i < n; i++) {
+    tmp.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2])
+    let sum = 0
+    for (let b = 0; b < nb; b++) {
+      const bone = bones[b]
+      const { d, t } = distToSegment(tmp, bone.a, bone.b)
+      const w = Math.exp(-((d / bone.sigma) ** 2))
+      W[i * nb + b] = w
+      T[i * nb + b] = t
+      sum += w
+    }
+    if (sum > 1e-6) {
+      for (let b = 0; b < nb; b++) W[i * nb + b] /= sum
+    }
+  }
+  const idx = (key: string) => bones.findIndex((b) => b.key === key)
+  const iClavL = idx('clavL'), iClavR = idx('clavR')
+  const iUarmL = idx('uarmL'), iUarmR = idx('uarmR')
+  const iFarmL = idx('farmL'), iFarmR = idx('farmR')
+  const iHandL = idx('handL'), iHandR = idx('handR')
+  const iUlegL = idx('ulegL'), iUlegR = idx('ulegR')
+  const iLlegL = idx('llegL'), iLlegR = idx('llegR')
+  const iFootL = idx('footL'), iFootR = idx('footR')
+  const iPelvis = idx('pelvis'), iSpine4 = idx('spine4'), iSpine3 = idx('spine3')
+  const iSpine2 = idx('spine2'), iChest = idx('chest'), iNeck = idx('neck'), iHead = idx('head')
+
+  const masks: Masks = {
+    fat: new Float32Array(n),
+    belly: new Float32Array(n),
+    glute: new Float32Array(n),
+    pec: new Float32Array(n),
+    lat: new Float32Array(n),
+    abs: new Float32Array(n),
+    trap: new Float32Array(n),
+    delt: new Float32Array(n),
+    arm: new Float32Array(n),
+    fore: new Float32Array(n),
+    thigh: new Float32Array(n),
+    calf: new Float32Array(n),
+    side: new Float32Array(n),
+    torso: new Float32Array(n),
+  }
+
+  const front = (z: number) => smoothstep(0.002, 0.035, z)
+  const back = (z: number) => smoothstep(0.002, 0.035, -z)
+
+  for (let i = 0; i < n; i++) {
+    const x = positions[i * 3]
+    const y = positions[i * 3 + 1]
+    const z = positions[i * 3 + 2]
+    const w = (k: number) => W[i * nb + k]
+    const t = (k: number) => T[i * nb + k]
+
+    const wUarm = w(iUarmL) + w(iUarmR)
+    const wFarm = w(iFarmL) + w(iFarmR)
+    const wHand = w(iHandL) + w(iHandR)
+    const wUleg = w(iUlegL) + w(iUlegR)
+    const wLleg = w(iLlegL) + w(iLlegR)
+    const wFoot = w(iFootL) + w(iFootR)
+    const wPelvis = w(iPelvis)
+    const wSpine4 = w(iSpine4)
+    const wSpine3 = w(iSpine3)
+    const wSpine2 = w(iSpine2)
+    const wChest = w(iChest)
+    const wNeck = w(iNeck)
+    const wHead = w(iHead)
+    const wClav = w(iClavL) + w(iClavR)
+    const torso = clamp(wPelvis + wSpine4 + wSpine3 + wSpine2 + wChest, 0, 1)
+
+    masks.torso[i] = torso
+    masks.side[i] = Math.sign(x)
+    masks.fat[i] = clamp(
+      1 - 0.8 * wHand - 0.8 * wFoot - 0.45 * wFarm - 0.2 * wLleg - 0.6 * wHead,
+      0,
+      1,
+    )
+
+    // ventre : bas du tronc, face avant
+    const bellyCore = wSpine3 + 0.7 * wSpine4 + 0.5 * wSpine2
+    masks.belly[i] = clamp(bellyCore * front(z) * gauss(y, 0.585, 0.075), 0, 1)
+
+    // fessiers : bassin, face arrière
+    masks.glute[i] = clamp((wPelvis + 0.35 * wSpine4) * back(z) * gauss(y, 0.51, 0.06), 0, 1)
+
+    // pectoraux : face avant du haut du tronc
+    const sidePec = 0.45 + 0.55 * smoothstep(0.004, 0.045, Math.abs(x))
+    masks.pec[i] = clamp((wChest + 0.45 * wClav) * front(z) * gauss(y, 0.755, 0.055) * sidePec, 0, 1)
+
+    // dorsaux : flancs du haut du tronc
+    masks.lat[i] = clamp(
+      (wChest + 0.45 * wSpine2) * smoothstep(0.03, 0.085, Math.abs(x)) * gauss(y, 0.70, 0.075),
+      0,
+      1,
+    )
+
+    // sangle abdominale
+    masks.abs[i] = clamp((wSpine2 + wSpine3) * front(z) * gauss(y, 0.615, 0.07), 0, 1)
+
+    // paramètre le long d'un membre (t pondéré par les poids de peau)
+    const tAlong = (wL: number, wR: number, kL: number, kR: number) =>
+      (wL * t(kL) + wR * t(kR)) / Math.max(wL + wR, 1e-6)
+
+    // trapèzes / cou
+    masks.trap[i] = clamp((0.8 * wNeck + 0.3 * wChest) * smoothstep(0.79, 0.86, y), 0, 1)
+
+    // deltoïdes : proximal du bras
+    const tArm = tAlong(w(iUarmL), w(iUarmR), iUarmL, iUarmR)
+    const proximalArm = 1 - smoothstep(0.1, 0.55, tArm)
+    masks.delt[i] = clamp(wUarm * proximalArm * smoothstep(0.74, 0.8, y), 0, 1)
+
+    // biceps / triceps : corps du bras
+    masks.arm[i] = clamp(wUarm * gauss(tArm, 0.45, 0.3), 0, 1)
+    masks.fore[i] = clamp(wFarm, 0, 1)
+
+    // cuisses et mollets
+    const tLeg = tAlong(w(iUlegL), w(iUlegR), iUlegL, iUlegR)
+    const tShin = tAlong(w(iLlegL), w(iLlegR), iLlegL, iLlegR)
+    masks.thigh[i] = clamp(wUleg * gauss(tLeg, 0.35, 0.45), 0, 1)
+    masks.calf[i] = clamp(wLleg * gauss(tShin, 0.3, 0.32), 0, 1)
+  }
+
+  masksCache = masks
+  return masks
+}
+
+// ---------------------------------------------------------------------------
+// Morphing
+// ---------------------------------------------------------------------------
+
+/** Volume signé (m³) d'un maillage fermé indexé. */
+function meshVolume(pos: Float32Array, indices: Uint16Array): number {
+  let v = 0
+  for (let i = 0; i < indices.length; i += 3) {
+    const a = indices[i] * 3
+    const b = indices[i + 1] * 3
+    const c = indices[i + 2] * 3
+    const ax = pos[a], ay = pos[a + 1], az = pos[a + 2]
+    const bx = pos[b], by = pos[b + 1], bz = pos[b + 2]
+    const cx = pos[c], cy = pos[c + 1], cz = pos[c + 2]
+    v +=
+      (ax * (by * cz - bz * cy) -
+        ay * (bx * cz - bz * cx) +
+        az * (bx * cy - by * cx)) /
+      6
+  }
+  return Math.abs(v)
+}
+
+/** Périmètre d'une coupe (approché par tri angulaire autour du centre). */
+function slicePerimeter(
+  pos: Float32Array,
+  filter: (i: number) => boolean,
+  center: THREE.Vector3,
+  axis: THREE.Vector3,
+  slab: number,
+  u: THREE.Vector3,
+  v: THREE.Vector3,
+): number {
+  const pts: Array<[number, number]> = []
+  for (let i = 0; i < pos.length / 3; i++) {
+    if (!filter(i)) continue
+    const px = pos[i * 3] - center.x
+    const py = pos[i * 3 + 1] - center.y
+    const pz = pos[i * 3 + 2] - center.z
+    if (Math.abs(px * axis.x + py * axis.y + pz * axis.z) > slab) continue
+    const a = px * u.x + py * u.y + pz * u.z
+    const b = px * v.x + py * v.y + pz * v.z
+    pts.push([a, b])
+  }
+  if (pts.length < 8) return 0
+
+  // enveloppe convexe (Andrew) : le tri angulaire créait des zigzags
+  // entre la face avant et la face arrière de la tranche.
+  pts.sort((p, q) => p[0] - q[0] || p[1] - q[1])
+  const cross = (o: [number, number], a: [number, number], b: [number, number]) =>
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+  const lower: Array<[number, number]> = []
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop()
+    lower.push(p)
+  }
+  const upper: Array<[number, number]> = []
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i]
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop()
+    upper.push(p)
+  }
+  const hull = lower.slice(0, -1).concat(upper.slice(0, -1))
+  let per = 0
+  for (let i = 0; i < hull.length; i++) {
+    const a = hull[i]
+    const b = hull[(i + 1) % hull.length]
+    per += Math.hypot(b[0] - a[0], b[1] - a[1])
+  }
+  return per
+}
+
+export interface BodyBuild {
+  geometry: THREE.BufferGeometry
+  /** génitaux, modelés séparément */
+  genitals: THREE.BufferGeometry | null
+  metrics: BodyMetrics
+  positions: Float32Array
+}
+
+export function buildBodyGeometry(p: BodyParams): BodyBuild {
+  const base = getBaseMesh()
+  const posed = getPosedBase()
+  const masks = getMasks()
+  const n = base.positions.length / 3
+
+  // 1. morphologie : cibles MakeHuman empilées sur le mesh brut
+  const morphed = new Float32Array(base.positions)
+  const weights = debugLayerWeights() ?? getLayerWeights(p)
+  for (const [name, w] of Object.entries(weights)) applyTarget(morphed, name, w)
+
+  // 2. pose de repos appliquée au corps morphé
+  const pq = posePositions(morphed, base.joints)
+  const src = pq.positions
+
+  // 3. normales du corps morphé + posé (les masques s'appuient dessus)
+  const tmpGeo = new THREE.BufferGeometry()
+  tmpGeo.setAttribute('position', new THREE.BufferAttribute(src.slice(), 3))
+  tmpGeo.setIndex(new THREE.BufferAttribute(base.indices.slice(), 1))
+  tmpGeo.computeVertexNormals()
+  const nrm = new Float32Array(tmpGeo.getAttribute('normal').array as ArrayLike<number>)
+  tmpGeo.dispose()
+
   const H = clamp(p.height, 140, 210) / 100
-  const fatD = clamp((p.fat - 18) / 22, -0.7, 1.1)
-  const bellyD = clamp((p.belly - 30) / 70, -0.45, 1)
+  const fatD = clamp((p.fat - 12) / 22, -0.7, 1.4)
+  const bellyD = clamp((p.belly - 25) / 70, -0.45, 1.1)
   const neckD = nn(p.neck)
   const shD = nn(p.shoulders)
   const latsD = nn(p.lats)
@@ -139,340 +485,177 @@ export function buildBody(p: BodyParams): { group: THREE.Group; metrics: BodyMet
   const armD = nn(p.arms)
   const foreD = nn(p.forearms)
 
-  const group = new THREE.Group()
-  let volume = 0
+  const dFat = fatD * 0.011
+  const dBelly = bellyD * 0.075
+  const dGlute = glutD * 0.02
+  const dPec = pecsD * 0.012
+  const dLat = latsD * 0.015
+  const dAbs = absD * 0.006
+  const dTrap = neckD * 0.01
+  const dDelt = shD * 0.013
+  const dArm = armD * 0.012
+  const dFore = foreD * 0.008
+  const dThigh = thighD * 0.012
+  const dCalf = calfD * 0.011
 
-  const addGeo = (geo: THREE.BufferGeometry) => {
-    volume += Math.abs(signedVolume(geo))
-    const solid = new THREE.Mesh(geo, BODY_MAT)
-    solid.userData.isWire = false
-    const wire = new THREE.Mesh(geo, WIRE_MAT)
-    wire.scale.setScalar(1.0015)
-    wire.userData.isWire = true
-    wire.visible = false
-    group.add(solid, wire)
+  const out = new Float32Array(src.length)
+  for (let i = 0; i < n; i++) {
+    const x = src[i * 3]
+    const y = src[i * 3 + 1]
+    const z = src[i * 3 + 2]
+    const nx = nrm[i * 3]
+    const ny = nrm[i * 3 + 1]
+    const nz = nrm[i * 3 + 2]
+
+    const alongNormal =
+      dFat * masks.fat[i] +
+      dTrap * masks.trap[i] +
+      dDelt * masks.delt[i] +
+      dArm * masks.arm[i] +
+      dFore * masks.fore[i] +
+      dThigh * masks.thigh[i] +
+      dCalf * masks.calf[i]
+    const alongZ = dBelly * masks.belly[i] + dPec * masks.pec[i] + dAbs * masks.abs[i] - dGlute * masks.glute[i]
+    const alongX = dLat * masks.lat[i] * masks.side[i]
+
+    out[i * 3] = (x + nx * alongNormal + alongX) * H
+    out[i * 3 + 1] = (y + ny * alongNormal) * H
+    out[i * 3 + 2] = (z + nz * alongNormal + alongZ) * H
   }
 
-  // ---------------------------------------------------------------- torse + cou
-  const torso: TorsoSection[] = TORSO_BASE.map((s) => {
-    const sec = { ...s }
-    const y = sec.y
+  // 4. définition anatomique gravée (pectoraux, abdos, serratus, jambes)
+  const anat = applyAnatomy(out, nrm, { joints: pq.joints, masks, H })
 
-    const fw = band(y, 0.49, 0.7, 0.05) + 0.4 * band(y, 0.7, 0.78, 0.03)
-    sec.rx += fatD * 0.022 * fw
-    sec.rzF += fatD * 0.016 * fw
-    sec.rzB += fatD * 0.018 * fw
+  const geometry = geometryFromPositions(out)
+  // normales analytiques : le maillage est trop grossier pour porter seul
+  // des rainures de 6 mm, le relief fin est réinjecté ici
+  applyBumpNormals(geometry, anat)
 
-    const bw = band(y, 0.57, 0.71, 0.035)
-    sec.rzF += bellyD * 0.034 * bw
-    sec.z += bellyD * 0.011 * bw
-    sec.rx += bellyD * 0.006 * bw
-
-    const aw = band(y, 0.56, 0.7, 0.03)
-    sec.rx -= absD * 0.005 * aw
-    sec.rzF -= absD * 0.003 * aw
-
-    const gw = band(y, 0.5, 0.585, 0.03)
-    sec.rzB += glutD * 0.022 * gw
-    sec.z -= glutD * 0.005 * gw
-
-    const lw = band(y, 0.68, 0.79, 0.03)
-    sec.rx += latsD * 0.024 * lw
-
-    const pw = band(y, 0.715, 0.765, 0.02)
-    sec.rzF += pecsD * 0.018 * pw
-    sec.rx += pecsD * 0.003 * pw
-
-    const sw = band(y, 0.775, 0.833, 0.02)
-    sec.rx += shD * 0.016 * sw
-
-    const nw = band(y, 0.833, 0.89, 0.012)
-    const ns = 1 + neckD * 0.18 * nw
-    sec.rx *= ns
-    sec.rzF *= ns
-    sec.rzB *= ns
-
-    return sec
-  })
-
-  addGeo(
-    loftRings(
-      torso.map((s) => ({
-        center: new THREE.Vector3(0, s.y * H, s.z * H),
-        rx: s.rx * H,
-        rzF: s.rzF * H,
-        rzB: s.rzB * H,
-        grooveF: s.gF,
-        grooveB: s.gB,
-      })),
-      36,
-      'both',
-    ),
-  )
-
-  // ---------------------------------------------------------------- tête
-  const headRings = [
-    { y: 0.87, rx: 0.019, rzF: 0.032, rzB: 0.024, z: 0.012 },
-    { y: 0.881, rx: 0.033, rzF: 0.04, rzB: 0.034, z: 0.009 },
-    { y: 0.895, rx: 0.041, rzF: 0.045, rzB: 0.042, z: 0.004 },
-    { y: 0.912, rx: 0.045, rzF: 0.05, rzB: 0.05, z: 0.002 },
-    { y: 0.93, rx: 0.0465, rzF: 0.05, rzB: 0.056, z: 0.0 },
-    { y: 0.948, rx: 0.047, rzF: 0.048, rzB: 0.06, z: -0.001 },
-    { y: 0.965, rx: 0.044, rzF: 0.044, rzB: 0.056, z: -0.002 },
-    { y: 0.98, rx: 0.036, rzF: 0.035, rzB: 0.045, z: -0.003 },
-    { y: 0.993, rx: 0.022, rzF: 0.021, rzB: 0.026, z: -0.003 },
-    { y: 1.0, rx: 0.004, rzF: 0.004, rzB: 0.005, z: -0.003 },
-  ]
-  addGeo(
-    loftRings(
-      headRings.map((s) => ({
-        center: new THREE.Vector3(0, s.y * H, s.z * H),
-        rx: s.rx * H,
-        rzF: s.rzF * H,
-        rzB: s.rzB * H,
-      })),
-      32,
-      'both',
-    ),
-  )
-
-  for (const s of [1, -1]) {
-    addGeo(ellipsoid(new THREE.Vector3(s * 0.0475 * H, 0.928 * H, -0.004 * H), 0.0055 * H, 0.015 * H, 0.01 * H, 16))
-  }
-  addGeo(ellipsoid(new THREE.Vector3(0, 0.914 * H, 0.051 * H), 0.0085 * H, 0.02 * H, 0.0125 * H, 20))
-
-  // ---------------------------------------------------------------- bras
-  const upperLen = 0.171 * H
-  const foreLen = 0.15 * H
-  const armAngle = (6 * Math.PI) / 180
-  const foreAngle = (7 * Math.PI) / 180
-  const shX = (0.098 + shD * 0.012) * H
-  const shY = 0.815 * H
-  const shZ = 0.004 * H
-
-  const upperProfile = [
-    { t: 0.08, rx: 0.042, rzF: 0.041, rzB: 0.043 },
-    { t: 0.18, rx: 0.036, rzF: 0.038, rzB: 0.037 },
-    { t: 0.38, rx: 0.032, rzF: 0.036, rzB: 0.032 },
-    { t: 0.62, rx: 0.029, rzF: 0.031, rzB: 0.029 },
-    { t: 0.85, rx: 0.027, rzF: 0.028, rzB: 0.027 },
-    { t: 1.0, rx: 0.0265, rzF: 0.0275, rzB: 0.0265 },
-  ].map((pt) => {
-    const grow = 1 + armD * 0.2 * smoothstep(0.12, 0.3, pt.t)
-    const delt = shD * 0.006 * (1 - smoothstep(0.2, 0.4, pt.t))
-    return {
-      ...pt,
-      rx: pt.rx * grow + delt,
-      rzF: pt.rzF * grow + delt,
-      rzB: pt.rzB * grow + delt,
-    }
-  })
-
-  const foreBase = [
-    { t: 0.0, rx: 0.027, rzF: 0.028, rzB: 0.028 },
-    { t: 0.18, rx: 0.029, rzF: 0.03, rzB: 0.029 },
-    { t: 0.55, rx: 0.023, rzF: 0.024, rzB: 0.023 },
-    { t: 0.85, rx: 0.0175, rzF: 0.018, rzB: 0.0175 },
-    { t: 1.0, rx: 0.016, rzF: 0.017, rzB: 0.016 },
-  ]
-  const foreScale = 1 + foreD * 0.18
-
-  const bicepRing = {
-    rx: upperProfile[2].rx * H,
-    rz: ((upperProfile[2].rzF + upperProfile[2].rzB) * 0.5) * H,
-  }
-
-  for (const s of [1, -1]) {
-    const shoulder = new THREE.Vector3(s * shX, shY, shZ)
-    const elbow = new THREE.Vector3(
-      shoulder.x + s * Math.sin(armAngle) * upperLen,
-      shoulder.y - Math.cos(armAngle) * upperLen,
-      shoulder.z + 0.011 * H,
-    )
-    const wrist = new THREE.Vector3(
-      elbow.x + s * Math.sin(foreAngle) * foreLen,
-      elbow.y - Math.cos(foreAngle) * foreLen,
-      elbow.z + 0.005 * H,
-    )
-
-    // dôme d'épaule : sommet arrondi glissé sous l'acromion, puis deltoïde
-    const topRings: LoftRing[] = [
-      { center: new THREE.Vector3(s * (shX - 0.004 * H), 0.8225 * H, shZ - 0.002 * H), rx: 0.004 * H, rzF: 0.005 * H, rzB: 0.005 * H },
-      { center: new THREE.Vector3(s * (shX - 0.003 * H), 0.819 * H, shZ - 0.001 * H), rx: 0.016 * H, rzF: 0.019 * H, rzB: 0.02 * H },
-      { center: new THREE.Vector3(s * (shX - 0.001 * H), 0.816 * H, shZ), rx: 0.028 * H, rzF: 0.031 * H, rzB: 0.032 * H },
-      { center: shoulder.clone(), rx: 0.036 * H, rzF: 0.039 * H, rzB: 0.04 * H },
-    ]
-    const armRings: LoftRing[] = [
-      ...topRings,
-      ...upperProfile.map((pt) => ({
-        center: shoulder.clone().addScaledVector(elbow.clone().sub(shoulder), pt.t),
-        rx: pt.rx * H,
-        rzF: pt.rzF * H,
-        rzB: pt.rzB * H,
-      })),
-    ]
-    addGeo(loftRings(armRings, 26, 'both'))
-
-    addGeo(
-      loftRings(
-        foreBase.map((pt) => ({
-          center: elbow
-            .clone()
-            .addScaledVector(new THREE.Vector3().subVectors(elbow, wrist).normalize(), 0.008 * H)
-            .lerp(wrist, pt.t),
-          rx: pt.rx * H * foreScale,
-          rzF: pt.rzF * H * foreScale,
-          rzB: pt.rzB * H * foreScale,
-        })),
-        24,
-        'both',
-      ),
-    )
-
-    // main : paume + doigts recroquevillés, pouce
-    const handDir = new THREE.Vector3().subVectors(wrist, elbow).normalize()
-    const handLen = 0.097 * H
-    const handStart = wrist.clone().addScaledVector(handDir, -0.005 * H)
-    const inward = new THREE.Vector3(-s, 0, 0)
-    const handBase = [
-      { t: 0.0, rx: 0.016, rzF: 0.0175, rzB: 0.0165 },
-      { t: 0.22, rx: 0.0145, rzF: 0.0245, rzB: 0.024 },
-      { t: 0.55, rx: 0.014, rzF: 0.023, rzB: 0.023 },
-      { t: 0.82, rx: 0.012, rzF: 0.02, rzB: 0.02 },
-      { t: 1.0, rx: 0.0075, rzF: 0.013, rzB: 0.013 },
-    ]
-    const handRings: LoftRing[] = handBase.map((pt) => {
-      const c = handStart.clone().addScaledVector(handDir, pt.t * handLen)
-      c.addScaledVector(inward, 0.004 * H * smoothstep(0.2, 1, pt.t))
-      const g = 0.9 + 0.1 * foreScale
-      return {
-        center: c,
-        rx: pt.rx * H * g,
-        rzF: pt.rzF * H * g,
-        rzB: pt.rzB * H * g,
-      }
-    })
-    addGeo(loftRings(handRings, 22, 'both'))
-
-    const thumbCenter = wrist
-      .clone()
-      .addScaledVector(handDir, 0.024 * H)
-      .add(new THREE.Vector3(-s * 0.003 * H, 0, 0.023 * H))
-    const thumbDir = new THREE.Vector3(-s * 0.18, -0.72, 0.67).normalize()
-    const thumb = new THREE.SphereGeometry(1, 16, 12)
-    thumb.scale(0.0095 * H, 0.017 * H, 0.0105 * H)
-    const tq = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), thumbDir)
-    thumb.applyQuaternion(tq)
-    thumb.translate(thumbCenter.x, thumbCenter.y, thumbCenter.z)
-    addGeo(thumb)
-  }
-
-  // ---------------------------------------------------------------- jambes
-  const hip = new THREE.Vector3(0.056 * H, 0.535 * H, 0)
-  const kneeX = 0.047 * H
-  const kneeY = 0.287 * H
-  const ankleY = 0.045 * H
-  const thighTop = new THREE.Vector3(
-    hip.x,
-    hip.y + 0.03 * H,
-    0,
-  )
-  const thighBase = [
-    { t: 0.0, rx: 0.038, rzF: 0.043, rzB: 0.048 },
-    { t: 0.12, rx: 0.046, rzF: 0.052, rzB: 0.06 },
-    { t: 0.24, rx: 0.05, rzF: 0.055, rzB: 0.064 },
-    { t: 0.34, rx: 0.053, rzF: 0.057, rzB: 0.062 },
-    { t: 0.46, rx: 0.054, rzF: 0.057, rzB: 0.057 },
-    { t: 0.58, rx: 0.051, rzF: 0.054, rzB: 0.052 },
-    { t: 0.72, rx: 0.047, rzF: 0.049, rzB: 0.046 },
-    { t: 0.86, rx: 0.041, rzF: 0.043, rzB: 0.04 },
-    { t: 0.95, rx: 0.038, rzF: 0.04, rzB: 0.037 },
-    { t: 1.0, rx: 0.035, rzF: 0.038, rzB: 0.035 },
-  ]
-  const thighScale = 1 + thighD * 0.2
-  const calfBase = [
-    { t: 0.0, rx: 0.0365, rzF: 0.036, rzB: 0.035 },
-    { t: 0.055, rx: 0.0358, rzF: 0.044, rzB: 0.0355 },
-    { t: 0.16, rx: 0.034, rzF: 0.035, rzB: 0.04 },
-    { t: 0.4, rx: 0.03, rzF: 0.031, rzB: 0.035 },
-    { t: 0.68, rx: 0.023, rzF: 0.024, rzB: 0.026 },
-    { t: 0.88, rx: 0.018, rzF: 0.019, rzB: 0.02 },
-    { t: 1.0, rx: 0.0165, rzF: 0.017, rzB: 0.018 },
-  ]
-  const calfScale = 1 + calfD * 0.2
-  const footSections = [
-    { z: -0.043, rx: 0.016, h: 0.018, cy: 0.02 },
-    { z: -0.03, rx: 0.021, h: 0.022, cy: 0.024 },
-    { z: -0.01, rx: 0.026, h: 0.024, cy: 0.026 },
-    { z: 0.015, rx: 0.029, h: 0.021, cy: 0.023 },
-    { z: 0.045, rx: 0.03, h: 0.016, cy: 0.018 },
-    { z: 0.075, rx: 0.028, h: 0.012, cy: 0.014 },
-    { z: 0.1, rx: 0.022, h: 0.009, cy: 0.011 },
-    { z: 0.107, rx: 0.014, h: 0.006, cy: 0.008 },
-  ]
-
-  for (const s of [1, -1]) {
-    const knee = new THREE.Vector3(s * kneeX, kneeY, 0.005 * H)
-    const ankle = new THREE.Vector3(s * 0.0455 * H, ankleY, 0)
-    const top = new THREE.Vector3(s * thighTop.x, thighTop.y, 0)
-
-    addGeo(
-      loftRings(
-        thighBase.map((pt) => {
-          const c = top.clone().lerp(knee, pt.t)
-          return {
-            center: c,
-            rx: pt.rx * H * thighScale,
-            rzF: pt.rzF * H * thighScale,
-            rzB: pt.rzB * H * thighScale,
-          }
-        }),
-        28,
-        'both',
-      ),
-    )
-
-    const calfTop = new THREE.Vector3(s * 0.0465 * H, 0.302 * H, 0.004 * H)
-    addGeo(
-      loftRings(
-        calfBase.map((pt) => ({
-          center: calfTop.clone().lerp(ankle, pt.t),
-          rx: pt.rx * H * calfScale,
-          rzF: pt.rzF * H * calfScale,
-          rzB: pt.rzB * H * calfScale,
-        })),
-        26,
-        'both',
-      ),
-    )
-
-    const footRings: LoftRing[] = footSections.map((f) => ({
-      center: new THREE.Vector3(
-        s * 0.0455 * H + s * (f.z + 0.043) * H * 0.1,
-        f.cy * H,
-        f.z * H,
-      ),
-      rx: f.rx * H,
-      rzF: f.h * H,
-      rzB: f.h * H,
-    }))
-    addGeo(loftRings(footRings, 24, 'both'))
-  }
-
-  // ---------------------------------------------------------------- estimations
-  const weight = volume * 1000 * 0.97
+  // --- métriques ---
+  // `out` est déjà à l'échelle réelle : le volume est en m³.
+  // K compense la différence entre volume géométrique et masse réelle
+  // (densité ~1,03 kg/L, plus les organes non modélisés).
+  const volM3 = meshVolume(out, base.indices)
+  const weight = volM3 * 1000 * 1.02
   const lean = weight * (1 - p.fat / 100)
-  const waistSec = torso[6]
-  const chestSec = torso[12]
-  const thighRing = thighBase[5]
+
+  const bones = getBones()
+  const b = (key: string) => bones.find((bb) => bb.key === key)!
+  const up = new THREE.Vector3(0, 1, 0)
+  const xAxis = new THREE.Vector3(1, 0, 0)
+
+  const waistCenter = new THREE.Vector3(0, 0.60 * H, 0)
+  const chestCenter = new THREE.Vector3(0, 0.755 * H, 0)
+  const waist = slicePerimeter(out, (i) => masks.torso[i] > 0.55, waistCenter, up, 0.012 * H, xAxis, new THREE.Vector3(0, 0, 1))
+  const chest = slicePerimeter(out, (i) => masks.torso[i] > 0.55, chestCenter, up, 0.012 * H, xAxis, new THREE.Vector3(0, 0, 1))
+
+  const uarm = b('uarmL')
+  const armAxis = new THREE.Vector3().subVectors(uarm.b, uarm.a).normalize()
+  const armCenter = new THREE.Vector3().lerpVectors(uarm.a, uarm.b, 0.45).multiplyScalar(H)
+  // l'axe des articulations n'est pas exactement l'axe du membre (la cible
+  // féminine décale le bras) : on recale le plan de coupe sur la géométrie
+  // réelle, sinon la tranche est vide et le tour de bras vaut 0.
+  const recenter = (
+    center: THREE.Vector3,
+    a: THREE.Vector3,
+    bb: THREE.Vector3,
+    axis: THREE.Vector3,
+    mask: Float32Array,
+    side: number,
+  ) => {
+    const p0 = a.clone().multiplyScalar(H)
+    const p1 = bb.clone().multiplyScalar(H)
+    const ax = p1.clone().sub(p0)
+    const len2 = ax.lengthSq()
+    const acc = new THREE.Vector3()
+    let n = 0
+    for (let i = 0; i < out.length / 3; i++) {
+      if (mask[i] < 0.45) continue
+      const x = out[i * 3]
+      if (side > 0 ? x <= 0 : x >= 0) continue
+      const p = new THREE.Vector3(x, out[i * 3 + 1], out[i * 3 + 2])
+      const t = Math.max(0, Math.min(1, p.clone().sub(p0).dot(ax) / len2))
+      acc.add(p.sub(p0.clone().addScaledVector(ax, t)))
+      n++
+    }
+    if (n > 0) center.add(acc.divideScalar(n))
+    return center
+  }
+  recenter(armCenter, uarm.a, uarm.b, armAxis, masks.arm, 1)
+  const uu = new THREE.Vector3().crossVectors(armAxis, up).normalize()
+  const vv = new THREE.Vector3().crossVectors(armAxis, uu).normalize()
+  const arm = slicePerimeter(
+    out,
+    (i) => masks.arm[i] > 0.3 && out[i * 3] > 0,
+    armCenter,
+    armAxis,
+    0.012 * H,
+    uu.multiplyScalar(H).normalize(),
+    vv.multiplyScalar(H).normalize(),
+  )
+
+  const uleg = b('ulegL')
+  const thighAxis = new THREE.Vector3().subVectors(uleg.b, uleg.a).normalize()
+  const thighCenter = new THREE.Vector3().lerpVectors(uleg.a, uleg.b, 0.5).multiplyScalar(H)
+  recenter(thighCenter, uleg.a, uleg.b, thighAxis, masks.thigh, 1)
+  const tu = new THREE.Vector3().crossVectors(thighAxis, new THREE.Vector3(0, 0, 1)).normalize()
+  const tv = new THREE.Vector3().crossVectors(thighAxis, tu).normalize()
+  const thigh = slicePerimeter(
+    out,
+    (i) => masks.thigh[i] > 0.3 && out[i * 3] > 0,
+    thighCenter,
+    thighAxis,
+    0.012 * H,
+    tu,
+    tv,
+  )
+
   const metrics: BodyMetrics = {
     weight,
     lean,
-    waist: ellipseCirc(waistSec.rx * H, ((waistSec.rzF + waistSec.rzB) * 0.5) * H) * 100,
-    chest: ellipseCirc(chestSec.rx * H, ((chestSec.rzF + chestSec.rzB) * 0.5) * H) * 100,
-    arm: ellipseCirc(bicepRing.rx, bicepRing.rz) * 100,
-    thigh: ellipseCirc(thighRing.rx * H * thighScale, ((thighRing.rzF + thighRing.rzB) * 0.5) * H * thighScale) * 100,
+    waist: waist * 100,
+    chest: chest * 100,
+    arm: arm * 100,
+    thigh: thigh * 100,
   }
 
+  // génitaux : maillages procéduraux posés sur la surface pubienne réelle
+  const pubis = findPubis(out, H)
+  const genitals = buildGenitals(pubis, H / 1.75)
+  genitals.scale(H, H, H)
+
+  return { geometry, genitals, metrics, positions: out }
+}
+
+/** Groupe prêt à afficher : solide + maillage filaire superposé. */
+export function buildBody(p: BodyParams): { group: THREE.Group; metrics: BodyMetrics } {
+  const { geometry, genitals, metrics } = buildBodyGeometry(p)
+  const group = new THREE.Group()
+  const solid = new THREE.Mesh(geometry, BODY_MAT)
+  solid.userData.isWire = false
+  group.add(solid)
+  if (genitals) {
+    const g = new THREE.Mesh(genitals, BODY_MAT)
+    g.userData.isWire = false
+    group.add(g)
+  }
+  const wire = new THREE.Mesh(geometry, WIRE_MAT)
+  wire.userData.isWire = true
+  wire.visible = false
+  group.add(wire)
   return { group, metrics }
 }
+
+export const BODY_MAT = new THREE.MeshStandardMaterial({
+  color: 0xb0ada8,
+  roughness: 0.86,
+  metalness: 0,
+})
+
+export const WIRE_MAT = new THREE.MeshBasicMaterial({
+  color: 0x9af0cf,
+  wireframe: true,
+  transparent: true,
+  opacity: 0.14,
+  depthWrite: false,
+})
