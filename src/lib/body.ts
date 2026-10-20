@@ -3,6 +3,7 @@ import { getPosedBase, posePositions } from './base/pose'
 import { getBaseMesh, geometryFromPositions } from './base/mesh'
 import { applyTarget } from './base/morph'
 import { buildGenitals, findPubis } from './base/genitals'
+import { absField, applyBumpShader, buildBumpTexture, bumpUniforms } from './base/bump'
 import { applyAnatomy, applyBumpNormals } from './base/details'
 
 /**
@@ -100,7 +101,7 @@ export function getLayerWeights(p: BodyParams): LayerWeights {
     muscleMin: clamp(1 - 2 * m01, 0, 1),
     weightMax: clamp(2 * w01 - 1, 0, 1),
     weightMin: clamp(1 - 2 * w01, 0, 1),
-    vshape: local(p.lats, 0.9),
+    vshape: local(p.lats, 0.45),
     pectoral: local(p.pecs, 1.0),
     dorsi: local(p.lats, 0.7),
     shoulderDist: local(p.shoulders, 0.7),
@@ -472,6 +473,7 @@ export function buildBodyGeometry(p: BodyParams): BodyBuild {
   tmpGeo.dispose()
 
   const H = clamp(p.height, 140, 210) / 100
+  setBumpHeight(H * 100)
   const fatD = clamp((p.fat - 12) / 22, -0.7, 1.4)
   const bellyD = clamp((p.belly - 25) / 70, -0.45, 1.1)
   const neckD = nn(p.neck)
@@ -489,7 +491,7 @@ export function buildBodyGeometry(p: BodyParams): BodyBuild {
   const dBelly = bellyD * 0.075
   const dGlute = glutD * 0.02
   const dPec = pecsD * 0.012
-  const dLat = latsD * 0.015
+  const dLat = latsD * 0.024
   const dAbs = absD * 0.006
   const dTrap = neckD * 0.01
   const dDelt = shD * 0.013
@@ -651,6 +653,15 @@ export const BODY_MAT = new THREE.MeshStandardMaterial({
   roughness: 0.86,
   metalness: 0,
 })
+
+// Relief fin des abdominaux : la géométrie est trop grossière pour le graver,
+// le relief est donc porté par une bump map procédurale (voir base/bump.ts).
+applyBumpShader(BODY_MAT, absField(), buildBumpTexture(absField(), 256))
+
+/** Met à jour l'échelle du motif (la taille du corps change la coordonnée). */
+export function setBumpHeight(heightCm: number) {
+  bumpUniforms.uBumpInvH.value = 1 / (heightCm / 100)
+}
 
 export const WIRE_MAT = new THREE.MeshBasicMaterial({
   color: 0x9af0cf,

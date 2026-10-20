@@ -127,6 +127,21 @@ export default function App() {
   }, [params, mode, wire])
 
   useEffect(() => {
+    // Surcharge des paramètres via l'URL (debug) : ?fat=20&lats=30&arms=80
+    const qs = new URLSearchParams(location.search)
+    const patch: Partial<BodyParams> = {}
+    for (const k of [
+      'height', 'fat', 'belly', 'neck', 'shoulders', 'lats', 'pecs', 'abs',
+      'glutes', 'thighs', 'calves', 'arms', 'forearms',
+    ] as const) {
+      const v = qs.get(k)
+      if (v !== null && Number.isFinite(Number(v))) (patch as Record<string, number>)[k] = Number(v)
+    }
+    if (Object.keys(patch).length) {
+      setCurrent((c) => ({ ...c, ...patch }))
+      setTarget((t) => ({ ...t, ...patch }))
+    }
+
     const preset = new URLSearchParams(location.search).get('preset')
     if (preset && PRESETS[preset]) {
       setTarget({ ...DEFAULT_PARAMS, ...PRESETS[preset] })

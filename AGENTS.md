@@ -379,6 +379,23 @@ itérations, facteur 0,35) est appliqué aux seuls sommets de transition
 (aisselle, entre-jambes) : ces zones étaient comprimées par la déformation et
 formaient une fente sombre.
 
+**Session 2 ter — abdominaux et « curseur dorsaux ».** Deux problems distincts :
+- les abdominaux paraissaient *en creux* : mes rainures faisaient 2 cm de large,
+  elles rongeaient les blocs. Et surtout, à 13 000 sommets, un bloc de 4 × 3,5 cm
+  n'est représenté que par 3 × 2,7 sommets : impossible de graver un 8-pack net
+  par la géométrie. Le relief fin est désormais porté par une **bump map
+  procédurale** (`src/lib/base/bump.ts`) : le champ de déplacement des abdominaux
+  est échantillonné en 256 × 256, son gradient est stocké en texture et injecté
+  dans la normale **par fragment** (`onBeforeCompile`). Aucun aliasing, séparations
+  nettes à tout zoom, exactement comme une sculpture retouchée.
+  → `uBumpStrength` = 0,55, `uBumpInvH` suit la taille du corps.
+- le curseur « dorsaux » creusait les flancs : la cible MakeHuman `vshape`
+  (poids 0,9) rentrait le torse au mauvais endroit. Gain ramené à 0,45 et
+  compensé par un renflement des dorsaux contrôlé (`dLat` 0,015 → 0,024).
+- les rainures des genoux ont été adoucies (le « V » du vaste médial faisait un
+  pli anguleux).
+- Ajout d'une surcharge des paramètres par l'URL (debug) :
+  `?fat=20&lats=30&arms=80` — pratique pour isoler l'effet d'un curseur.
 
 ## 4. Bugs connus, causes identifiées
 

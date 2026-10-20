@@ -75,6 +75,8 @@ interface Bulge {
   mirror?: boolean
   /** exclut la ligne médiane (pour ne pas gonfler le sternum) */
   midline?: number
+  /** rotation de l'ellipse (radians) */
+  rot?: number
 }
 
 /** Distance à une polyligne + point le plus proche (pour le gradient). */
@@ -136,8 +138,8 @@ function torsoGrooves(): Groove[] {
       [0, 0.645],
       [0, 0.688],
     ],
-    width: 0.0105,
-    depth: 0.0046,
+    width: 0.0090,
+    depth: 0.0018,
     region: torso,
   })
 
@@ -190,8 +192,8 @@ function torsoGrooves(): Groove[] {
         [0.021, y + 0.0005],
         [0.040, y + 0.004],
       ],
-      width: 0.0105,
-      depth: 0.005,
+      width: 0.0085,
+      depth: 0.0016,
       region: (i, c) => c.masks.abs[i],
     })
   }
@@ -205,8 +207,8 @@ function torsoGrooves(): Groove[] {
         [x, 0.617],
         [x, 0.653],
       ],
-      width: 0.0098,
-      depth: 0.0042,
+      width: 0.0080,
+      depth: 0.0014,
       region: (i, c) => c.masks.abs[i],
     })
   }
@@ -563,7 +565,16 @@ export function applyAnatomy(
       let dx = x - b.c[0]
       if (b.mirror) dx = Math.abs(dx) - b.c[0]
       const dy = y - b.c[1]
-      const q = (dx / b.r[0]) ** 2 + (dy / b.r[1]) ** 2
+      let q: number
+      if (b.rot) {
+        const ca = Math.cos(b.rot)
+        const sa = Math.sin(b.rot)
+        const rx = dx * ca + dy * sa
+        const ry = -dx * sa + dy * ca
+        q = (rx / b.r[0]) ** 2 + (ry / b.r[1]) ** 2
+      } else {
+        q = (dx / b.r[0]) ** 2 + (dy / b.r[1]) ** 2
+      }
       if (q > 4) continue
       let f = b.depth * Math.exp(-q) * region
       let midline = 1
