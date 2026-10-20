@@ -430,11 +430,7 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
       for (const [ba, bb, sg] of pelvisBones) wPelv += boneWeight(p, ba, bb, sg)
       return wLegB / Math.max(wLegB + wPelv, 1e-6)
     }
-    rotatePoints(positions, q3, hip, (i) => {
-      const w = wLeg(i) * strength
-      if (w > 0.02 && w < 0.98) transition[i / 3] = Math.max(transition[i / 3], 1 - Math.abs(w - 0.5) * 2)
-      return w
-    })
+    rotatePoints(positions, q3, hip, (i) => wLeg(i) * strength)
 
     for (const key of [`${side}-knee`, `${side}-ankle`, `${side}-foot-1`, `${side}-foot-2`]) {
       if (!joints[key]) continue

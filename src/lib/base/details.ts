@@ -342,7 +342,7 @@ function bulges(ctx: AnatomyContext): Bulge[] {
     list.push({
       c: [c.x, c.y],
       r: [0.03, 0.05],
-      depth: -0.0032,
+      depth: -0.0018,
       region: (i, cc) => cc.masks.calf[i],
       dir: 'normal',
     })
@@ -403,25 +403,27 @@ function legGrooves(): Groove[] {
   // séparation droit fémoral / vaste latéral
   list.push({
     pts: [
-      [0.062, 0.455],
-      [0.072, 0.400],
-      [0.079, 0.345],
-      [0.084, 0.300],
+      [0.060, 0.460],
+      [0.066, 0.425],
+      [0.072, 0.390],
+      [0.077, 0.355],
+      [0.081, 0.320],
+      [0.084, 0.295],
     ],
-    width: 0.0095,
-    depth: 0.0046,
+    width: 0.013,
+    depth: 0.0028,
     region: thigh,
     mirror: true,
   })
   // larme du vaste médial (bord interne au-dessus du genou)
   list.push({
     pts: [
-      [0.043, 0.335],
-      [0.040, 0.310],
-      [0.041, 0.288],
+      [0.044, 0.345],
+      [0.041, 0.318],
+      [0.040, 0.296],
     ],
-    width: 0.008,
-    depth: 0.004,
+    width: 0.016,
+    depth: 0.0016,
     region: thigh,
     mirror: true,
   })
