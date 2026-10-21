@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Viewer } from './scene/viewer'
-import { loadBodyModel } from './lib/base/model'
+import { loadBodyModel, getLoadedBody } from './lib/base/model'
 import {
   buildBody,
   DEFAULT_PARAMS,
@@ -145,6 +145,14 @@ export default function App() {
     v.setAccent(mode === 'current' ? 0x38bdf8 : 0xa3e635)
     setMetrics(m)
   }, [params, mode, wire, ready])
+
+  // mode debug : affichage des repères anatomiques du modèle
+  useEffect(() => {
+    const v = viewerRef.current
+    if (!v || !ready) return
+    const show = new URLSearchParams(location.search).get('joints') === '1'
+    v.setJoints(show ? getLoadedBody()?.joints ?? null : null)
+  }, [ready])
 
   useEffect(() => {
     // Surcharge des paramètres via l'URL (debug) : ?fat=20&lats=30&arms=80

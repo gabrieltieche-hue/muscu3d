@@ -358,6 +358,35 @@ export class Viewer {
     this.pivot.add(group)
   }
 
+  /**
+   * Affiche les repères anatomiques du modèle (mode debug `?joints=1`).
+   * Sert à vérifier l'import d'un modèle externe : les repères mal placés
+   * se voient immédiatement.
+   */
+  setJoints(joints: Record<string, THREE.Vector3> | null) {
+    const existing = this.pivot.getObjectByName('__joints')
+    if (existing) {
+      this.pivot.remove(existing)
+      ;(existing as THREE.Group).traverse((o) => {
+        const m = o as THREE.Mesh
+        if (m.geometry) m.geometry.dispose()
+      })
+    }
+    if (!joints) return
+    const g = new THREE.Group()
+    g.name = '__joints'
+    const geo = new THREE.SphereGeometry(0.012, 12, 8)
+    const mat = new THREE.MeshBasicMaterial({ color: 0xff3366, depthTest: false })
+    for (const [name, p] of Object.entries(joints)) {
+      const s = new THREE.Mesh(geo, mat)
+      s.position.copy(p)
+      s.renderOrder = 999
+      s.name = name
+      g.add(s)
+    }
+    this.pivot.add(g)
+  }
+
   setAccent(hex: number) {
     ;(this.ring.material as THREE.MeshBasicMaterial).color.setHex(hex)
   }

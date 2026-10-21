@@ -117,8 +117,9 @@ JOINT_SPEC = {
 def silhouette_joints(verts, faces):
     """Deduit les repères de la silhouette du corps.
 
-    Le modèle est en A-pose (bras le long du corps) : la silhouette donne
-    les membres ; pour les hanches on prend la largeur de la ceinture.
+    Le modèle peut être en A-pose (bras le long du corps) ou en T-pose
+    (bras horizontaux) : on le détecte sur la largeur de la silhouette
+    (à hauteur d'épaule et à hauteur de hanche).
     """
     n = len(verts)
     ys = [v[1] for v in verts]
@@ -126,70 +127,95 @@ def silhouette_joints(verts, faces):
     h = y1 - y0
     joints = {}
 
-    def band(ymin, ymax):
-        """sommets d'une tranche de hauteur, avec leur x/z moyen"""
-        sel = [i for i in range(n) if ymin <= (verts[i][1] - y0) / h <= ymax]
-        if not sel:
-            return None
-        return sel
+    def band(fy, half=0.03):
+        lo = y0 + (fy - half) * h
+        hi = y0 + (fy + half) * h
+        return [i for i in range(n) if lo <= verts[i][1] <= hi]
 
-    def widest(sel):
-        """deux sommets les plus écartés en x (bords de la silhouette)"""
+    def width(sel):
+        if not sel:
+            return 0.0
+        return max(verts[i][0] for i in sel) - min(verts[i][0] for i in sel)
+
+    w_sh = width(band(0.82))
+    w_hip = width(band(0.55))
+    tpose = w_sh > max(2.2 * w_hip, 0.30)
+    print(f"  largeur épaules {w_sh:.3f} / hanches {w_hip:.3f} → {'T-pose' if tpose else 'A-pose'}")
+
+    def edge_at(fy, half=0.03):
+        sel = band(fy, half)
         if not sel:
             return None
         lo = min(sel, key=lambda i: verts[i][0])
         hi = max(sel, key=lambda i: verts[i][0])
         return lo, hi
 
-    def centroid(sel):
+    def center_at(fy, half=0.03):
+        sel = band(fy, half)
         if not sel:
             return None
-        sx = sum(verts[i][0] for i in sel) / len(sel)
-        sz = sum(verts[i][2] for i in sel) / len(sel)
-        return sx, sz
+        cx = sum(verts[i][0] for i in sel) / len(sel)
+        cz = sum(verts[i][2] for i in sel) / len(sel)
+        return cx, cz
 
-    for name, (fy, kind) in JOINT_SPEC.items():
-        if kind == "center":
-            sel = band(fy - 0.02, fy + 0.02)
+    # --- axe central : pelvis, colonne, cou, tête ---
+    for name, fy in (
+        ("pelvis", 0.53),
+        ("spine-4", 0.575),
+        ("spine-3", 0.61),
+        ("spine-2", 0.66),
+        ("spine-1", 0.75),
+        ("neck", 0.845),
+        ("head", 0.905),
+        ("head-2", 0.985),
+    ):
+        c = center_at(fy)
+        if c:
+            joints[name] = (c[0], y0 + fy * h, c[1])
+
+    # --- membres ---
+    sh = edge_at(0.815)
+    if not sh:
+        return joints
+    sx = abs(verts[sh[1]][0])
+    for name, (fx, fy, kind) in {
+        "shoulder": (None, 0.805, "sh"),
+        "elbow": (None, 0.635, "el"),
+        "hand": (None, 0.585, "ha"),
+        "upper-leg": (None, 0.515, "hip"),
+        "knee": (None, 0.27, "kn"),
+        "ankle": (None, 0.045, "an"),
+        "foot-1": (None, 0.012, "to"),
+    }.items():
+        if kind == "sh":
+            x = sx
+        elif kind == "hip":
+            e = edge_at(0.5)
+            x = abs(verts[e[1]][0]) if e else sx * 0.7
+        elif kind == "kn":
+            e = edge_at(0.27)
+            x = abs(verts[e[1]][0]) if e else sx * 0.5
+        elif kind == "an":
+            e = edge_at(0.05)
+            x = abs(verts[e[1]][0]) if e else sx * 0.35
+        elif kind == "to":
+            sel = band(0.015, 0.025)
             if not sel:
                 continue
-            cx, cz = centroid(sel)
-            joints[name] = (cx, y0 + fy * h, cz)
-            continue
-        if kind == "edge":
-            sel = band(fy - 0.035, fy + 0.035)
-            if not sel:
-                continue
-            w = widest(sel)
-            if not w:
-                continue
-            lo, hi = w
-            # le bord de la silhouette à cette hauteur peut être le bras
-            # (A-pose) : on prend le point le plus externe mais on vérifie
-            # qu'il est bien à la bonne hauteur
-            joints[name] = (verts[lo][0], verts[lo][1], verts[lo][2])
-            joints[name + "@mirror"] = (verts[hi][0], verts[hi][1], verts[hi][2])
-            continue
-        if kind == "hip":
-            sel = band(fy - 0.03, fy + 0.03)
-            if not sel:
-                continue
-            w = widest(sel)
-            if not w:
-                continue
-            lo, hi = w
-            joints[name] = (verts[lo][0], verts[lo][1], verts[lo][2])
-            joints[name + "@mirror"] = (verts[hi][0], verts[hi][1], verts[hi][2])
-            continue
-        if kind == "toe":
-            sel = band(fy - 0.02, fy + 0.02)
-            if not sel:
-                continue
-            # l'orteil : point le plus en avant du pied
             i = max(sel, key=lambda i: verts[i][2])
             joints[name] = (verts[i][0], verts[i][1], verts[i][2])
-            joints[name + "@mirror"] = (verts[i][0], verts[i][1], verts[i][2])
-
+            continue
+        else:
+            # coude / main : en A-pose le bras est le long du corps
+            x = sx * (1.0 if kind == "el" else 1.02)
+            if tpose:
+                # en T-pose, le bras part horizontalement de l'épaule
+                x = sx * (0.45 if kind == "el" else 0.95)
+        y = y0 + fy * h
+        # z : devant ou derrière ? on prend la position moyenne en z du membre
+        sel = band(fy, 0.025)
+        z = sum(verts[i][2] for i in sel) / len(sel) if sel else 0.0
+        joints[name] = (x, y, z)
     return joints
 
 
@@ -320,9 +346,10 @@ def write_glb(positions, indices, joints, out_path: Path, quads=None, is_makehum
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model")
+    ap.add_argument("--out", default=None, help="fichier .glb de sortie (défaut : public/body-<nom>.glb)")
     ap.add_argument("--flip", action="store_true", help=" retourne le modèle (face vers -z)")
     ap.add_argument("--rot90", action="store_true", help=" pivote de 90° autour de Y")
-    ap.add_argument("--scale", type=float, default=None, help=" hauteur en cm (défaut : normalisation)")
+    ap.add_argument("--force", action="store_true", help=" écrase public/body.glb (le modèle par défaut)")
     args = ap.parse_args()
 
     path = Path(args.model)
@@ -364,19 +391,16 @@ def main():
             continue
         x, y, z = joints[name]
         final[name] = (x, y, z)
-        mir = joints.get(name + "@mirror")
-        if mir:
-            final["r-" + name] = mir
-            final["l-" + name] = (x, y, z)
-            final["r-" + name] = mir
-            # le repère de l'autre côté : symétrique en x
-            final["l-" + name] = (-abs(mir[0]) if abs(mir[0]) > abs(x) else abs(x), y, z)
-    final.pop("l-l-shoulder", None)
-    final.pop("l-l-upper-leg", None)
+        final["l-" + name] = (abs(x), y, z)
+        final["r-" + name] = (-abs(x), y, z)
 
     out_path = OUT
+    if args.out:
+        out_path = Path(args.out)
+    elif not args.force:
+        out_path = OUT_DIR / ("body-" + path.stem.lower().replace(" ", "-") + ".glb")
     size = write_glb(verts, indices, final, out_path)
-    print(f"écrit {out_path.relative_to(ROOT)} : {size/1024:.0f} Ko")
+    print(f"écrit {out_path.relative_to(ROOT) if out_path.is_absolute() else out_path} : {size/1024:.0f} Ko")
     print(f"  {len(verts)} sommets, {len(indices)//3} triangles, {len(final)} repères")
     for k in sorted(final):
         if k.startswith("l-"):
