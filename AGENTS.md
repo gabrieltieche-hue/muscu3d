@@ -3,38 +3,46 @@
 > Ce fichier est destiné au **prochain agent IA** qui reprend le projet.
 > Il contient : le but du produit, l'état exact du code, ce qui a été fait, les bugs
 > connus et vérifiés, les pistes validées, et les recettes de l'environnement.
-> Dernière mise à jour : **2026-10-20 (session 2)**. La session 2 a reconstruit
-> la 3D : pose continue, cibles MakeHuman, anatomie gravée, génitaux, rendu
-> studio. Lire **§1bis** (goal visuel) puis **§3.5** (ce qui a été fait) avant
-> de toucher au code.
+> Dernière mise à jour : **2026-10-21 (session 3)**.
+> La session 3 a basculé le projet sur l'architecture **« modèle 3D en fichier »** :
+> le corps est un `.glb` chargé par `GLTFLoader`, plus une sculpture procédurale.
+> Lire **§1bis** (goal visuel) puis **§3.6** (ce qui a été fait) avant de toucher au code.
 > Langue de travail du projet : **français** (UI, code commenté, réponses).
 
 ---
 
-## 0. CONSIGNE EN COURS DE L'UTILISATEUR (2026-10-19)
+## 0. CONSIGNE EN COURS DE L'UTILISATEUR (2026-10-21)
 
-> **« Le modèle 3D, je veux qu'il ressemble à ça »** — 8 images de référence fournies
-> par l'utilisateur, copiées dans `docs/reference/`, spécification complète au **§1bis**.
-> C'est le **GOAL VISUEL CLAIR ET ÉTABLI**. Il prime sur toute autre fonctionnalité.
+> **« Je veux passer sur cette stratégie »** — la méthode standard et la plus performante
+> pour afficher un modèle corporel 3D interactif : **on charge un fichier modèle 3D**
+> (`.gltf` / `.glb` / `.obj`) dans la page, on configure des lumières (l'effet « ombre
+> grise studio »), et l'utilisateur tourne autour avec la souris. Le code ne doit pas
+> « dessiner le corps muscle par muscle à partir de rien ».
+
+> **Modèles cités par l'utilisateur** :
+> - `https://free3d.com/3d-model/male-base-mesh-6682.html` (base mesh masculine)
+> - `https://www.sloyd.ai/fr/3d-human-model-generator` (générateur de corps humain)
+>
+> ⚠️ **free3d renvoie 403 à tous les robots** (protection Cloudflare) : le téléchargement
+> doit être fait **à la main depuis un navigateur**, puis le fichier déposé dans
+> `scripts/assets/`.
 
 Ordre de travail convenu :
 
-1. Rendre le corps **masculin, anatomique et crédible** (style sculpture grise, socle)
-   — c'est l'objet du §1bis et du plan §5. **FAIT en session 2** (voir §3.5).
-2. Faire valider par l'utilisateur sur des captures (face / profil / dos / 3-4 + gros
-   plans torse, bras, pieds) — captures dans `docs/etat-2026-10-20/`.
-3. Seulement ensuite : saisie du poids réel, UI/UX, programme, nutrition, timeline.
+1. **Modèle 3D en fichier** → `public/body.glb`, chargé par `GLTFLoader` — **FAIT**
+   (voir §3.6). L'import d'un modèle externe est prêt (§5.2).
+2. **L'utilisateur télécharge un modèle** (sloyd / free3d) et le dépose dans
+   `scripts/assets/` → je l'importe, je vérifie les repères (`?joints=1`), je compare.
+3. **Rendu studio** (ombres, AO, tone mapping, socle) — **FAIT**.
+4. **Anatomie / morphing** : le morphing MakeHuman (cibles CC0) ne s'applique qu'à la
+   base MakeHuman ; sur un autre modèle, seul le morphing procédural joue.
 
-**Ne pas lancer un autre chantier avant cette validation.**
-
-Décisions prises par l'utilisateur pendant la session 2 (elles priment sur le §1bis
-si elles le contredisent) :
-- **Pas de boxer** : le modèle montre le corps nu. (Un module `garment.ts` existe
-  mais n'est plus branché — à réactiver seulement sur demande explicite.)
-- **Génitaux présents**, un seul modèle pour tous les corps (masculin), pas de
-  variante féminine.
+**Décisions prises par l'utilisateur (elles priment sur le §1bis si elles le contredisent) :**
+- **Pas de boxer** : le modèle montre le corps nu. (Un module `garment.ts` existe mais
+  n'est plus branché — à réactiver seulement sur demande explicite.)
+- **Génitaux présents**, un seul modèle pour tous les corps (masculin).
 - Le reste du goal visuel (sculpture grise, socle, silhouette masculine, anatomie
-  lisible) est inchangé et atteint.
+  lisible) est inchangé.
 
 ---
 
@@ -50,32 +58,26 @@ Application web **locale, mono-utilisateur, en français** qui :
 ### Contraintes non négociables
 
 - **Budget zéro** : pas d'API payante, pas de GPU loué, pas de carte bancaire.
-  Tout doit tourner en local dans le navigateur.
 - **Pas de backend, pas de compte, pas de paiement.** Persistance = `localStorage`.
 - **Aucune photo de l'utilisateur.** L'avatar est un maillage paramétrique.
 - Doit servir **débutants ET confirmés**.
 - L'utilisateur choisit son **matériel** (salle / maison / rien) et son **horizon**.
 - **Honnêteté** : la prédiction à 6 mois a un budget d'erreur assumé de ±4 à 8 kg.
-  L'UI doit le dire, pas le cacher.
 
 ### Décisions produit déjà arbitrées
 
-- Trois modes : **« Réel »**, **« Scénario »** (projection clairement étiquetée comme
-  hypothèse) et **« Objectif »**.
+- Trois modes : **« Réel »**, **« Scénario »** et **« Objectif »**.
 - Les abdos ne sont pas un slider : ils émergent de **% de masse grasse + développement
   abdominal**.
 - `BodyParams` (le vecteur corporel) est **la source de vérité**. Le maillage n'est
-  qu'une projection visuelle de ce vecteur. Simulation, programme et nutrition
-  viendront tous se brancher sur ce même vecteur.
+  qu'une projection visuelle de ce vecteur.
 - Pas d'IA/LLM pour le MVP : simulation déterministe + règles.
 
 ### Verdict utilisateur sur la v1 (à l'origine du pivot)
 
 > « trop géométrique, trop moche, pas assez réaliste du tout »
 
-Conséquence : **la qualité visuelle du corps 3D est la priorité n°1**, avant toute
-autre fonctionnalité. Tant qu'elle n'est pas validée par l'utilisateur, ne pas
-enchaîner sur le programme/nutrition.
+Conséquence : **la qualité visuelle du corps 3D est la priorité n°1**.
 
 ---
 
@@ -83,9 +85,9 @@ enchaîner sur le programme/nutrition.
 
 Les 8 images de `docs/reference/` sont **la cible unique** fournie par l'utilisateur
 (« voilà le goal visuel clair et établi »). Ce sont très probablement des rendus
-**MakeHuman / MPFB** (même maillage de base, même boxer, même socle, même matière
-grise) : la cible est donc atteignable avec les **cibles CC0 officielles** (§5),
-pas en sculptant à la main.
+**MakeHuman / MPFB** (même maille de base, même socle, même matière grise) : la cible
+est donc atteignable avec un **mesh de base MakeHuman + les cibles CC0**, ou avec
+n'importe quel modèle de corps de qualité équivalente.
 
 **Chemins absolus** (les ouvrir avant de coder) :
 
@@ -104,9 +106,9 @@ pas en sculptant à la main.
 
 | fichier | vue | ce qu'elle montre |
 |---|---|---|
-| `ref-01-dos.jpg` | dos | trapèzes, rhomboides, grand dorsal en V, érecteurs du rachis, fessiers sous le boxer, triceps/avant-bras, crâne rasé |
-| `ref-02-face-piedestal.jpg` | face entière | homme athlétique sec, boxer, pieds nus sur socle rond, mains le long du corps |
-| `ref-03` / `ref-07` / `ref-08` (3/4) | 3/4 | pectoraux séparés, 8 abdos + obliques + serratus, deltoïdes, biceps/triceps, quadriceps (droit fémoral + vaste médial), tibial |
+| `ref-01-dos.jpg` | dos | trapèzes, rhomboides, grand dorsal en V, érecteurs, fessiers sous le boxer, triceps/avant-bras, crâne rasé |
+| `ref-02-face-piedestal.jpg` | face entière | homme athlétique sec, boxer, **pieds nus à plat sur le socle**, mains le long du corps |
+| `ref-03` / `ref-07` / `ref-08` | 3/4 | pectoraux séparés, 8 abdos + obliques + serratus, deltoïdes, biceps/triceps, quadriceps, tibial |
 | `ref-04-hero-contre-plongee.jpg` | contre-plongée | effet héroïque : épaules larges, trapèzes, bras légèrement en avant, mâchoire marquée |
 | `ref-05-troisquarts-surpoids-barbe.jpg` | 3/4 | obèse : ventre proéminent, poitrine tombante, cou épais, barbe — **la même base doit couvrir tous les gabarits** |
 | `ref-06-plongee-muscle.jpg` | plongée 3/4 | très musclé, bras fléchis en avant, dos large |
@@ -114,43 +116,25 @@ pas en sculptant à la main.
 ### Ce qui doit être identique dans notre rendu
 
 1. **Style** : sculpture monochrome **gris clair mat**, fond gris neutre, **socle
-   cylindrique** à bord biseauté, ombre douce. Aucune couleur de peau, aucun vêtement
-   autre que le boxer.
+   cylindrique** à bord biseauté, ombre douce. Aucune couleur de peau.
 2. **Silhouette masculine** : épaules nettement plus larges que les hanches, taille
-   marquée, fessiers hauts, cuisses galbées, mollets dessinés, cou épais, mâchoire
-   carrée.
-3. **Anatomie sculptée lisible** (en géométrie, pas seulement par la lumière) :
-   - face : deux pectoraux séparés par un sillon sternal, téton ;
-   - abdomen : 8 pack + ligne blanche + obliques + serratus (dents de scie) ;
-   - épaules : deltoïde en 3 faisceaux, sillon delto-pectoral ;
-   - bras : biceps/triceps séparés, avant-bras avec relief, main à 4 doigts + pouce,
-     ongles suggérés ;
-   - dos : trapèzes, rhomboides, grand dorsal en V, colonne lombaire, fessiers ;
-   - jambes : droit fémoral, vaste médial (« larme »), vaste latéral, sartorius suggéré,
-     deux chefs du mollet, tendon d'Achille, pieds nus avec orteils.
-4. **Boxer** : boxer brief gris, **ceinture élastique marquée + bandes de cuisse**.
-   Il masque le pubis (le mesh de base est nu et sans organes) et fait partie du look
-   de référence : il doit être modélisé, pas ignoré.
-5. **Tête** : visage d'adulte réaliste (yeux, sourcils, nez, lèvres, oreilles,
-   pommette, mâchoire), **crâne rasé** avec ligne d'implantation visible.
-6. **Pose** : debout, pieds écartés d'environ une largeur de bassin, bras le long du
-   corps légèrement décollés, mains relâchées (doigts légèrement fléchis), tête droite,
-   regard à l'horizon. Variantes de caméra : face, 3/4, profil, dos, plongée,
-   contre-plongée.
-7. **Gabarits** : la même base doit couvrir maigre → athlétique → très musclé → obèse
-   (`ref-05`). C'est exactement ce que permettent les cibles `weight` / `muscle` de
-   MakeHuman.
+   marquée, fessiers hauts, cuisses galbées, mollets dessinés, cou épais, mâchoire carrée.
+3. **Anatomie sculptée lisible** : pectoraux + sillon sternal, 8 abdos + ligne blanche +
+   obliques + serratus, deltoïdes, biceps/triceps séparés, dos (trapèzes, rhomboïdes,
+   grand dorsal en V, colonne), jambes (droit fémoral, vaste médial, deux chefs du
+   mollet, tendon d'Achille), **pieds nus avec orteils séparés**.
+4. **Tête** : visage d'adulte réaliste (yeux avec iris et pupille, sourcils, nez,
+   lèvres, oreilles, mâchoire), **crâne rasé** avec ligne d'implantation visible.
+5. **Pose** : debout, pieds écartés d'environ une largeur de bassin et **à plat sur le
+   socle**, bras le long du corps légèrement décollés, mains relâchées, tête droite.
+6. **Gabarits** : la même base doit couvrir maigre → athlétique → très musclé → obèse.
 
 ### Limites honnêtes (à dire à l'utilisateur)
 
 - Le **grain de peau / pores / cheveux rasés** des images est une **texture**, pas de la
-  géométrie. Sur 13 380 sommets, on peut l'approcher par une texture procédurale
-  (bruit) en phase 2 ; sans elle, le rendu sera « sculpture lisse ».
+  géométrie : c'est traité par un bruit procédural (voir `src/lib/base/bump.ts`).
 - La finesse d'un sculpt ZBrush n'est pas atteignable au sommet près avec des cibles
-  linéaires. L'objectif réaliste est **« même famille visuelle »** : même silhouette,
-  même anatomie lisible, même boxer, même matière, même socle.
-- **Critère d'acceptation** : l'utilisateur dit que **ça ressemble** sur des captures
-  face / profil / dos / 3-4 **et** des gros plans torse, visage, mains, pieds.
+  linéaires. L'objectif réaliste est **« même famille visuelle »**.
 
 ---
 
@@ -162,55 +146,65 @@ Node ≥ 22. Pas de dépendance à un serveur.
 ```
 muscu3d/
   AGENTS.md                  ← ce fichier
-  README.md                  ← présentation courte (partiellement obsolète : décrit la v1 loft)
-  docs/preview.png           ← aperçu v1 (obsolète)
-  docs/etat-2026-10-19-34.png, -face.png   ← rendus du mesh MakeHuman au 2026-10-19 (état actuel)
-  docs/reference/ref-01..08-*.jpg          ← ⭐ LES 8 IMAGES DE RÉFÉRENCE (goal visuel, §1bis)
+  README.md
+  public/body.glb            ← ⭐ LE MODÈLE 3D DU CORPS (glTF binaire)
+  docs/reference/ref-01..08-*.jpg   ← ⭐ LES 8 IMAGES DE RÉFÉRENCE
+  docs/etat-2026-10-20/      ← captures de la session 2
   index.html, vite.config.ts, tsconfig.json, package.json
   scripts/
-    assets/makehuman-base.obj + README.md   ← mesh source CC0 (1,7 Mo, conservé pour reproductibilité)
-    assets/targets/*.target                 ← cache des cibles MakeHuman (CC0)
-    prep-base.py             ← convertit le .obj en données embarquées TypeScript
-    prep-targets.py          ← lit les cibles .target (ASCII) → src/lib/base/targets.ts
-    shot.sh                  ← capture d'écran headless (Chromium 125)
-    calibrate.ts             ← script de calibration poids/mensurations (via npx tsx)
+    assets/makehuman-base.obj + README.md   ← mesh source CC0 (1,7 Mo)
+    assets/targets/*.target                  ← cache des cibles MakeHuman (CC0)
+    prep-base.py       ← .obj → data.ts (obsolète : le .glb le remplace)
+    prep-glb.py        ← .obj → public/body.glb  (makehuman-base.obj → .glb)
+    prep-targets.py    ← cibles .target → src/lib/base/targets.ts
+    import-body.py     ← ⭐ import d'un modèle EXTERNE (.obj/.glb) → .glb
+    shot.sh            ← capture headless (Chromium 125)
+    calibrate.ts       ← mesures (poids, tours) sur plusieurs morphologies
+    dev/               ← scripts de diagnostic (voir §6)
   src/
     App.tsx                  ← UI, état, persistance, deep links
     styles.css               ← thème sombre
-    scene/viewer.ts          ← scène studio Three.js (lumières, socle, anneau, caméra)
-    lib/body.ts              ← ⭐ params, presets, masques de déformation, morphing, métriques
-    lib/geometry.ts          ← LEGACY (helpers du loft v1) — plus utilisé, supprimable
-    lib/base/data.ts         ← ⚠️ GÉNÉRÉ par scripts/prep-base.py, ne pas éditer à la main
-    lib/base/targets.ts      ← ⚠️ GÉNÉRÉ par scripts/prep-targets.py, ne pas éditer à la main
-    lib/base/morph.ts        ← application des couches de morphing (cibles MakeHuman)
-    lib/base/details.ts      ← anatomie gravée (rainures, renflements) + normales analytiques
-    lib/base/genitals.ts     ← génitaux procéduraux (verge + scrotum)
-    lib/base/garment.ts      ← boxer (non branché : l'utilisateur l'a refusé)
-    lib/base/mesh.ts         ← décodage des données embarquées → BufferGeometry
-    lib/base/pose.ts         ← pose de repos (adduction des bras/jambes) bakeée au chargement
+    scene/viewer.ts          ← ⭐ scène studio Three.js (GTAO, ACES, ombres, socle)
+    lib/body.ts              ← ⭐ moteur de morphing + anatomie + mesures
+    lib/base/model.ts        ← ⭐ chargement du .glb (GLTFLoader)
+    lib/base/mesh.ts         ← accès au mesh de base chargé
+    lib/base/subdiv.ts       ← ⭐ subdivision Catmull-Clark (quads ou triangles)
+    lib/base/pose.ts         ← ⭐ pose de repos (pieds, bras, mains)
+    lib/base/details.ts      ← anatomie gravée (muscles, visage, doigts)
+    lib/base/face.ts         ← ⭐ iris + pupilles (sculpture)
+    lib/base/genitals.ts     ← génitaux procéduraux
+    lib/base/bump.ts         ← relief fin (abdos) + grain de cuir rasé
+    lib/base/morph.ts        ← application des cibles MakeHuman CC0
+    lib/base/targets.ts      ← ⚠️ GÉNÉRÉ (ne pas éditer à la main)
+    lib/base/garment.ts      ← boxer (non branché)
 ```
 
 ### Git
 
-- Dépôt initialisé **localement** (pas de remote), identité configurée dans le dépôt
-  (`local@muscu3d` / `muscu3d`).
-- Un seul commit : `9de3d11 Prototype v1 + body v3 (lofts lisses)`.
-- **Le pivot maillage n'est PAS commité** : `git status` montre `M src/lib/body.ts`,
-  `?? scripts/`, `?? src/lib/base/`, `?? AGENTS.md`, `?? docs/reference/`,
-  `?? docs/etat-2026-10-19-*.png`. Penser à commiter une fois le rendu validé.
+Dépôt local (pas de remote), identité `local@muscu3d` / `muscu3d`.
+Commits récents :
+
+```
+5aa1122 Importeur glTF (modeles riggues) + choix de modele via ?model= + reglages
+0112e58 Corrige le calcul des poids de peau (src[i*3] et non src[i])
+695f9db Importeur de modele externe + visualisation des reperes (?joints=1)
+6762e61 Le corps devient un modele 3D charge en fichier (glTF)
+a06b69b Subdivision Catmull-Clark, pose corrigee (pieds, axes articulaires), rendu studio
+```
 
 ### Vérifications qui passent aujourd'hui
 
 ```bash
 cd /root/muscu3d
-npx tsc --noEmit        # ✅ passe (dernier passage : 2026-10-19)
-npm run dev             # serveur sur http://127.0.0.1:5173
+npx tsc --noEmit        # ✅
+npm run dev             # → http://127.0.0.1:5173
 ```
 
 ⚠️ **Lancer le serveur de dev avec le mode « background » de l'outil shell**
-(`background: true`), pas avec un `&` dans une commande : sinon il meurt quand la
-commande rend la main, et il est de toute façon tué à chaque redémarrage du serveur
-opencode. Vérification : `curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:5173/`.
+(`background: true`) ou `setsid nohup … &` : sinon il meurt quand la commande rend la
+main. ⚠️ Après un redémarrage de la session, les vieux processus vite restent en
+`tracing stop` (artefact PRoot) et le port ne répond plus : **tuer le vieux PID et
+relancer** (vérifier `curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:5173/`).
 
 ---
 
@@ -218,378 +212,183 @@ opencode. Vérification : `curl -s -o /dev/null -w '%{http_code}' -m 5 http://12
 
 ### 3.1 v1 — prototype « loft » (commit 9de3d11)
 
-- Sliders (13 réglages), profils « corps actuel » / « corps cible », presets
-  (Sec, Athlétique, Bodybuilder, Massif), mesures live, caméras, rotation auto,
-  affichage filaire, persistance `localStorage` clé `muscu3d.v1`.
-- Corps construit par **loft de sections elliptiques** (`src/lib/geometry.ts` :
-  `loftRings`, normales lissées, volume signé, périmètre d'ellipse de Ramanujan).
-- Trois itérations de lissage (v2 → v4) : le résultat restait un **mannequin avec des
-  coutures visibles** aux jonctions (épaule/deltoïde, hanche/aine, genou, chevilles,
-  mains en « pagaie », tête en œuf).
-- **Décision : abandon du loft.** Le corps v3 loft reste consultable dans le commit.
+Sliders (13 réglages), profils, presets, mesures live, caméras, rotation auto,
+affichage filaire, persistance `localStorage`. Corps construit par **loft de sections
+elliptiques**. Résultat : un **mannequin avec des coutures visibles**. **Abandonné.**
 
-### 3.2 Pivot — maillage de base MakeHuman (état actuel, non commité)
+### 3.2 — maillage MakeHuman (session 2)
 
-Le fichier `scripts/assets/makehuman-base.obj` est le mesh de base officiel de
-MakeHuman, **CC0 1.0** (voir `scripts/assets/README.md`) :
+`makehuman-base.obj` (CC0) : 13 380 sommets / 13 378 quads, mesh fermé (0 arête
+frontière), groupe `joint-*` (125 repères anatomiques), helpers (yeux, dents, cheveux).
+Repères clés (normalisés, hauteur = 1) :
 
-- groupe `body` : **13 380 sommets / 13 378 faces** (quads) → **26 756 triangles**,
-  **0 arête frontière** (manifold fermé : pas de trou aux yeux ni à l'aine) ;
-- contient aussi des groupes `helper-*` (yeux, dents, cheveux, jupe, organes) et
-  `joint-*` (repères d'articulations) — **seuls `body` et `joint-*` sont utilisés** ;
-- coordonnées normalisées par `prep-base.py` : **pieds à y = 0, sommet du crâne à
-  y = 1, visage vers +z** ;
-- volume du mesh brut : **0,01187 m³** (hauteur 1) → **63,6 L** à 1,75 m.
+| repère | x | y | z | | repère | x | y | z |
+|---|---|---|---|---|---|---|---|---|
+| pelvis | 0 | 0.534 | 0.009 | | l-shoulder | 0.101 | 0.805 | 0.009 |
+| spine-3 | 0 | 0.602 | 0.009 | | l-elbow | 0.188 | 0.700 | 0.008 |
+| spine-1 | 0 | 0.750 | -0.004 | | l-hand | 0.259 | 0.637 | 0.105 |
+| neck | 0 | 0.844 | 0.004 | | l-upper-leg | 0.066 | 0.519 | 0.007 |
+| head-2 | 0 | 0.995 | 0.005 | | l-knee | 0.095 | 0.268 | 0.019 |
+| l-eye | 0.019 | 0.928 | 0.075 | | l-ankle | 0.132 | 0.043 | -0.001 |
+| l-upperlid | 0.019 | 0.935 | 0.095 | | l-foot-1 | 0.132 | 0.004 | 0.073 |
 
-`src/lib/base/data.ts` (≈332 Ko) embarque :
-`BASE_POS_Q` (positions Int16 quantifiées ×3000, base64), `BASE_INDEX` (Uint16 base64),
-`BASE_SCALE`, `JOINTS` (≈100 repères normalisés), `BASE_STATS`.
-Embarquement en base64 volontaire : **le build `vite-plugin-singlefile` prévu pour la
-suite doit rester un seul fichier HTML**, donc pas d'asset externe à charger.
+**Les cibles de morphing MakeHuman (CC0) ne s'appliquent qu'à CETTE topologie exacte**
+(indices de sommets du `base.obj` complet). C'est pourquoi le `.glb` porte un drapeau
+`extras.targets = true` : sans lui, seul le morphing procédural s'applique.
 
-Repères clés (normalisés, hauteur du corps = 1, retrouvés dans `JOINTS`) :
+### 3.3–3.5 — session 2 : pose, anatomie, rendu (résumé)
 
-| repère | x | y | z |
-|---|---|---|---|
-| pelvis | 0 | 0,534 | 0,009 |
-| spine-3 (taille) | 0 | 0,602 | 0,009 |
-| spine-2 | 0 | 0,658 | 0,016 |
-| spine-1 (haut poitrine) | 0 | 0,750 | -0,004 |
-| neck | 0 | 0,844 | 0,004 |
-| l-shoulder | 0,101 | 0,805 | 0,009 |
-| l-elbow | 0,188 | 0,700 | 0,008 |
-| l-hand | 0,259 | 0,637 | 0,105 |
-| l-upper-leg | 0,066 | 0,519 | 0,007 |
-| l-knee | 0,095 | 0,268 | 0,019 |
-| l-ankle | 0,132 | 0,043 | -0,001 |
-| l-foot-1 (orteils) | 0,132 | 0,004 | 0,073 |
+- Anatomie gravée : pectoraux, abdos, obliques, serratus, trapèzes, dorsaux, deltoïdes,
+  quadriceps, mollet (relief fin porté par une **bump map procédurale**).
+- Génitaux procéduraux, visage (yeux absents au départ), correctifs d'aisselle.
+- Rendu studio : fond dégradé, socle, trois lumières, tone mapping.
 
-`src/lib/base/pose.ts` — **pose de repos bakeée au premier chargement** (le mesh
-MakeHuman est livré en A-pose large, bras à ~40° du corps, pieds écartés) :
+### 3.6 — session 3 : « modèle 3D en fichier » + corrections profondes
 
-- adduction des bras par rotation dans le plan frontal autour de l'épaule,
-  `SHOULDER_TARGET = 26°`, fondu `smoothstep(-0.16, 0.22)` le long de l'os ;
-- adduction des jambes `LEG_ADDUCT = 3.5°` autour de la hanche ;
-- contre-rotation du pied pour le garder à plat.
-- Les verts **et** les repères d'articulations sont transformés (sinon le squelette
-  logiciel ne correspond plus au maillage).
+**1. Le corps est un fichier modèle.** `scripts/prep-glb.py` écrit `public/body.glb`
+(glTF binaire écrit à la main, sans dépendance) : maillage `body` + **un nœud par
+repère anatomique** + une extension maison `extras.quads` (les faces quads d'origine,
+nécessaires à la subdivision). `src/lib/base/model.ts` le charge avec
+**`GLTFLoader`** (chemin standard Three.js). Le blob base64 de 479 Ko a disparu du
+bundle JS. `?model=autre.glb` permet d'essayer un autre modèle sans recompiler.
 
-`src/lib/body.ts` — moteur de morphing (remplace l'ancien body.ts loft) :
+**2. Subdivision Catmull-Clark** (`src/lib/base/subdiv.ts`). 13 380 → **53 514**
+(niveau 1, 19 ms) ou **214 050** sommets (niveau 2, 38 ms). Le **plan topologique est
+précalculé une fois** (topologie fixe) et seules les positions sont recalculées à
+chaque image. Généralisée aux **triangles comme aux quads** (un modèle externe en
+triangles se subdivise aussi). Les quads d'origine sont préférables : la
+triangulation laisserait une vallée le long des diagonales.
 
-- `BodyParams` inchangé (13 scalaires, mêmes noms qu'en v1).
-- **Squelette logiciel** : 21 segments (`pelvis`, `spine4..spine2`, `chest`, `neck`,
-  `head`, ×2 `clav/uarm/farm/hand/uleg/lleg/foot`) construits à partir des `JOINTS`.
-- **Poids de peau** : pour chaque sommet, `w = exp(-(d/σ)²)` normalisé, σ par os
-  (0,028 → 0,085). Calculés **une fois** puis mis en cache.
-- **Masques de déformation** (`getMasks()`, 14 masques) : `fat`, `belly`, `glute`,
-  `pec`, `lat`, `abs`, `trap`, `delt`, `arm`, `fore`, `thigh`, `calf`, `torso`, `side`.
-- **Déplacements** : le long de la normale de repos (graisse, muscles) ou le long de
-  ±z / ±x (ventre, pectoraux, abdos, fessiers, dorsaux). Amplitudes actuelles :
-  `fat 0.0062 · bellyD 0.034 · glute 0.013 · pec 0.012 · lat 0.015 · abs 0.006 ·
-  trap 0.010 · delt 0.013 · arm 0.012 · fore 0.008 · thigh 0.012 · calf 0.011`
-  (unités normalisées, ×hauteur ensuite). **Non calibrées** — à régler visuellement.
-- Référence des paramètres : `fat = 12` et tous les muscles à 50 = mesh brut sans
-  déformation ; `DEFAULT_PARAMS` = `fat 18, belly 30, muscles 45`.
-- `buildBody(params)` → `{ group, metrics }` (API inchangée pour `App.tsx`) ;
-  `buildBodyGeometry(params)` → `{ geometry, metrics, positions }` (utilisée par le
-  script de calibration).
-- Métriques : volume signé du maillage fermé + périmètres par tranche.
+**3. Rendu studio** (`src/scene/viewer.ts`) : GTAO + MSAA(4) + ACES + ombre de
+contact + vignette + grain + environnement studio (3 boîtes à lumière en PMREM) +
+socle biseauté + `OutputPass`. Le contraste a été monté (clé 2.9, fill 0.32, rim 1.35,
+env 0.5, exposure 0.92) : c'est ce qui donne le relief « sculpture ».
 
-### 3.3 Rendu actuel — problèmes identifiés (voir les captures `docs/etat-2026-10-19-*.png`)
+**4. Pose : trois bugs corrigés (ils expliquaient tous les artefacts) :**
+   a. **Les axes d'os étaient pris sur le sommet de peau le plus proche** au lieu des
+      repères articulaires → les cuisses se tordaient en un pli en V. Les repères
+      suivent désormais le morphing (`morphedJoints` dans `lib/body.ts`).
+   b. **Les poids de peau lisaient `src[i]` au lieu de `src[i*3]`** (décalage d'un
+      tiers de sommet) → le pied droit était tordu, l'orteon arraché (« pics »), le
+      partage jambe/bassin faux. **Le pied tourne maintenant rigidement avec la jambe.**
+   c. **Le pied n'était plus à plat** : la rotation de la jambe fait pivoter le pied,
+      la correction de plante n'était pas symétrique (1 face trouvée à droite contre
+      56 à gauche → rotation parasite). Correction actuelle :
+      `qFoot = qYaw · qFlat · q3⁻¹`, la plante étant mesurée **au repos** (donc
+      parfaitement symétrique), et le poids du pied est le même dans les deux
+      transformations (rigidité).
 
-1. **Le mesh MakeHuman neutre est très féminin** : hanches larges, poitrine bombée,
-   épaules étroites, membres fins. La silhouette ne ressemble pas à un homme adulte.
-   → **C'est le problème n°1 actuel.**
-2. **Le poids affiché est faux** : `10,4 kg` au lieu de ~70 kg (bug identifié, §4).
-3. **Tour de poitrine absurde** : `517,7 cm` (bug identifié, §4). Taille `109 cm`
-   également trop grande.
-4. **Pose des mains** : les doigts partent en avant/en griffe ; les avant-bras sont
-   inclinés vers l'avant (`z` du poignet = 0,105 soit ~18 cm devant la cuisse).
-   Le pied/la cheville restent raides.
-5. Le visage est une tête lisse aux paupières fermées (pas d'yeux). Acceptable pour un
-   mannequin, à valider avec l'utilisateur.
+**5. Visage** (`src/lib/base/face.ts`) : le mesh de base a les paupières soudées, on ne
+peut pas ouvrir un trou proprement → on procède comme un sculpteur : la zone de l'œil
+est bombée en globe, l'**iris est un anneau sphérique** posé en relief, la **pupille
+est une calotte en creux**, plus le pli de paupière, l'arcade sourcilière, la ligne de
+cheveux et le **grain de cuir rasé** (bruit procédural dans le shader).
 
-### 3.4 Piste validée pour la suite (format confirmé au §5)
+**6. Ancrage au sol** : la pose soulève le pied de quelques millimètres → le maillage
+est translaté pour que la plante touche exactement le socle (y = 0).
 
-Le dépôt `makehumancommunity/makehuman` contient les **cibles de morphing officielles**
-(`.target`, **texte ASCII**, **CC0**) qui transforment le mesh de base et permettent de
-régler proportions, V-taper, pectoraux, tour de bras, etc. Le format exact, les tailles
-et le plan d'intégration sont décrits au **§5**.
+**7. Import d'un modèle externe** (`scripts/import-body.py`) : lit `.obj` **et**
+`.glb`/`.gltf`, normalise (pieds à 0, hauteur 1, centré), et en déduit les repères
+anatomiques — soit **depuis le squelette** (matrices d'inverse de liaison, bien plus
+fiable), soit **depuis la silhouette** (détection A-pose / T-pose). Un mode
+`?joints=1` affiche les repères pour valider l'import.
 
 ---
-
-### 3.5 Session 2 — reconstruction complète de la 3D (2026-10-20)
-
-C'est le gros du travail : le corps est passé de « mannequin lisse androgyne » à
-« sculpture masculine musclée » conforme au §1bis.
-
-**1. Pose (`src/lib/base/pose.ts`) — réécrite.** Le mesh MakeHuman arrive en A-pose
-large, coude plié de ~43° vers l'avant. L'ancienne pose (rotations successives
-épaule puis coude) produisait un « effet bonbon » au coude et des mains
-déchirées. Elle est remplacée par une **déformation de cylindre généralisé** :
-chaque section du membre est transportée le long d'une polyligne cible
-(épaule → coude → poignet) avec une rotation locale continue (tangente lissée au
-coude). Points à ne pas casser :
-- l'axe doit être reconstruit sur la **géométrie morphée** (`nearestOf()`), pas sur
-  les articulations d'origine, sinon la classification main/bras est fausse ;
-- la main est un **bloc rigide** suivant le poignet (`beyond`), pas transportée
-  section par section (sinon la palette plate s'étire) ;
-- le rayon de la main doit couvrir les doigts (0,15 → 0,28 normalisé) ;
-- garde-fou de déplacement à 0,45 : la main se déplace légitimement de ~28 cm.
-
-**2. Cibles MakeHuman (`scripts/prep-targets.py` + `src/lib/base/targets.ts`).**
-34 couches (674 Ko) : identité masculine, muscle/grassesse par segment, V-taper,
-pectoraux, dorsaux et mesures (épaules, bras, cuisses, mollet, cou, taille).
-Poids déduits des sliders dans `getLayerWeights()`. Le mesh de base est en fait
-**neutre** : c'est la couche `caucasian-male-young` qui donne le virage masculin.
-
-**3. Anatomie gravée (`src/lib/base/details.ts`).** Rainures (polylignes 2D pour le
-torse, 3D pour les membres) et renflements : pectoraux + sillon sternal + pli
-sous-mammelon, abdominaux (4 rangées calées sur le nombril réel du mesh, mesuré à
-y≈0,605), linea alba, obliques, serratus, trapèzes, rhomboïdes, grand dorsal,
-colonne, érecteurs, deltoïdes, biceps/triceps, brachio-radialien, quadriceps,
-mollet. Deux compétences acquises :
-- à 13 380 sommets (~1,5 cm d'arête) une rainure de 6 mm est **sous-échantillonnée** :
-  il faut l'élargir à ~1,5-2 cm, sinon elle disparaît dans les normales lissées ;
-- le **bump mapping analytique** (normales par fragment) aliasse violemment à cette
-  densité : `applyBumpNormals` existe mais son gain est mis à 0 (à réactiver
-  seulement avec un maillage plus dense).
-
-**4. Génitaux (`src/lib/base/genitals.ts`).** Maillage procédural (verge balayée +
-scrotum), posé sur la surface pubienne réelle (relevée sur le corps construit),
-échelle = taille du corps. Un seul modèle pour tous (décision utilisateur).
-
-**5. Rendu studio (`src/scene/viewer.ts`).** Gris mat, fond dégradé gris neutre,
-socle cylindrique clay, exposition 0,66, clé directionnelle douce.
-
-**6. Métriques (`src/lib/body.ts`).** Bug du poids (÷H³) corrigé ; périmètres
-recalculés par **enveloppe convexe** de la tranche (le tri angulaire créait des
-zigzags) ; plan de coupe **recentré sur la géométrie réelle** du membre.
-
-Captures de validation : `docs/etat-2026-10-20/`.
-**Correctif de la session 2 bis — aisselles déchirées.** Le partage de la peau
-entre le bras et le torse était fait par une bande radiale (0,07 → 0,115 autour
-de l'axe du bras) : trop large, elle entrainait le torse avec le bras et
-déchirait l'aisselle (trous visibles, arêtes en dents de scie). Remplacé par un
-**vrai partage par poids de peau** (mêmes gaussiennes que `lib/body.ts` :
-os du bras d'un côté, os du thorax de l'autre, poids = part du bras dans le
-total). Même traitement pour les jambes (bassin + autre jambe côté tronc), sinon
-c'est l'entre-jambes qui se déchire. Enfin, un **lissage de relaxation** (2
-itérations, facteur 0,35) est appliqué aux seuls sommets de transition
-(aisselle, entre-jambes) : ces zones étaient comprimées par la déformation et
-formaient une fente sombre.
-
-**Session 2 ter — abdominaux et « curseur dorsaux ».** Deux problems distincts :
-- les abdominaux paraissaient *en creux* : mes rainures faisaient 2 cm de large,
-  elles rongeaient les blocs. Et surtout, à 13 000 sommets, un bloc de 4 × 3,5 cm
-  n'est représenté que par 3 × 2,7 sommets : impossible de graver un 8-pack net
-  par la géométrie. Le relief fin est désormais porté par une **bump map
-  procédurale** (`src/lib/base/bump.ts`) : le champ de déplacement des abdominaux
-  est échantillonné en 256 × 256, son gradient est stocké en texture et injecté
-  dans la normale **par fragment** (`onBeforeCompile`). Aucun aliasing, séparations
-  nettes à tout zoom, exactement comme une sculpture retouchée.
-  → `uBumpStrength` = 0,55, `uBumpInvH` suit la taille du corps.
-- le curseur « dorsaux » creusait les flancs : la cible MakeHuman `vshape`
-  (poids 0,9) rentrait le torse au mauvais endroit. Gain ramené à 0,45 et
-  compensé par un renflement des dorsaux contrôlé (`dLat` 0,015 → 0,024).
-- les rainures des genoux ont été adoucies (le « V » du vaste médial faisait un
-  pli anguleux).
-- Ajout d'une surcharge des paramètres par l'URL (debug) :
-  `?fat=20&lats=30&arms=80` — pratique pour isoler l'effet d'un curseur.
 
 ## 4. Bugs connus, causes identifiées
 
-### Bug 1 — poids divisé par H³ (affiché 10,4 kg)
+### 4.1 ⚠️ Le mesh de base n'est plus embarqué
 
-Dans `src/lib/body.ts`, `buildBodyGeometry()` :
+`src/lib/base/data.ts` a été **supprimé** (le `.glb` le remplace). `scripts/prep-base.py`
+est devenu inutile. `scripts/dev/*.ts` qui utilisaient `getBaseMesh()` doivent
+**appeler `await loadModel()`** (voir `scripts/dev/load-model.ts`) sinon ils lèvent
+« modèle 3D non chargé ».
 
-```ts
-const volNorm = meshVolume(out, base.indices) / (H * H * H)
-const weight = volNorm * 1000 * 1.0      // ❌ 10,4 kg
-```
+### 4.2 Les mesures du panneau (UI) restent approximatives
 
-`out` est **déjà à l'échelle réelle** (mètres). Le volume renvoyé par `meshVolume` est
-donc déjà en m³. Correctif attendu :
+`lib/body.ts` mesure les tours par **enveloppe convexe de tranche** : c'est faux sur le
+torse (la tranche traverse les bras). La mesure fiable est par **coupe de plan** avec
+assemblage des segments — implémentée dans `scripts/dev/measure.ts` (à reporter dans
+`lib/body.ts` quand les mesures de l'UI compteront). Relevé actuel (défaut, 1,75 m) :
+bras 42,6 · avant-bras 26,2 · cuisse 66,7 · mollet 48,0 · poitrine 107,9 · taille 89,7 cm.
 
-```ts
-const volM3 = meshVolume(out, base.indices)   // m³ (mesh à l'échelle réelle)
-const weight = volM3 * 1000 * K               // K ≈ 1.0 à calibrer
-```
+### 4.3 Points faibles visuels restants (par ordre d'impact)
 
-Repère : mesh brut à 1,75 m = 63,6 L. Pour que `DEFAULT_PARAMS` affiche ~74-75 kg
-(crédible pour un homme de 1,75 m), soit `K ≈ 1,0` avec une morphologie par défaut
-qui ajoute ~10 L (calibrer les amplitudes de graisse/muscle), soit `K ≈ 1,15` en
-corrigeant le biais du mesh, qui est plus fin qu'un corps réel. **Décision à
-prendre explicitement et à documenter dans l'UI** (c'est une estimation).
+1. **Les mains** : les doigts restent un peu en raquette (le maillage de base les fusionne) ;
+   la séparation est一笔 gravée (sillons d'orteils/doigts) mais le modelé reste grossier.
+2. **La masse musculaire** : le maximum MakeHuman + morphing procédural donne un corps
+   « sec et sportif » ; la référence est un bodybuilder. Passer les curseurs muscles à
+   100 donne plus de volume mais reste en dessous.
+3. **Les génitaux** : anatomiquement plausibles mais lisiblement « ajoutés » de profil.
+4. Le **cou** reste un peu long malgré l'épaississement.
 
-### Bug 2 — périmètres aberrants (poitrine 517 cm)
+### 4.4 Pièges d'implémentation à ne pas refaire
 
-`slicePerimeter()` trie par angle autour du barycentre des points de la tranche puis
-somme les distances. Deux causes probables :
-
-- la bande horizontale de la poitrine (`0,755 · H`) contient aussi des **sommets des
-  bras** (les bras ont été ramenés le long du corps, ils traversent la même tranche) →
-  un jeu de points non convexe et multi-lobes fait exploser le périmètre ;
-- le seuil de filtre `masks.torso[i] > 0.55` n'est pas suffisant pour exclure les bras
-  après adduction.
-
-Correctif attendu : filtrer par appartenance au membre (poids de peau du bras < seuil),
-et/ou calculer le périmètre par **coupe dans un plan** (intersection triangle/plan)
-plutôt que par tri de sommets. Vérifier taille/poitrine/bras/cuisse sur plusieurs
-morphologies avant de s'y fier.
-
-### Bug 3 — morphologie jugée « féminine » au rendu
-
-⚠️ À lire avec le **bug 5** : le mesh de base **est déjà** un homme jeune moyen
-(la cible `universal-male-young-averagemuscle-averageweight` est vide, cf. §5). Le
-rendu « hanches larges / poitrine bombée / épaules étroites » vient donc très
-probablement de la **pose bake** et/ou d'amplitudes de masques non calibrées
-(`delt`, `lat`, `pec`), pas du maillage. Vérifier dans cet ordre avant de changer de
-base ou de retélécharger quoi que ce soit.
-
-### Bug 4 — mesures de calibration (2026-10-19, `npx tsx scripts/calibrate.ts`)
-
-Le script fonctionne (le premier essai silencieux était un artefact de piping).
-Sortie brute de référence, **à comparer après chaque correction** :
-
-| cas | poids | maigre | taille | poitrine | bras | cuisse |
-|---|---|---|---|---|---|---|
-| neutre (mesh brut, sans morph) | 9,8 | 8,6 | 107,2 | 490,8 | 30,0 | 39,7 |
-| défaut | 10,4 | 8,5 | 109,0 | 517,7 | 31,2 | 40,4 |
-| sec | 9,4 | 8,6 | 104,8 | 469,3 | 29,3 | 39,6 |
-| athlétique | 10,3 | 8,8 | 108,0 | 496,0 | 31,3 | 42,0 |
-| bodybuilder | 11,7 | 9,9 | 109,3 | 511,2 | 36,0 | 48,3 |
-| massif | 12,9 | 9,3 | 115,4 | 558,9 | 36,6 | 47,8 |
-| gros (fat 40 / ventre 100) | 14,2 | 8,5 | 122,1 | 695,7 | 37,9 | 47,8 |
-| maigre (fat 6) | 8,7 | 8,1 | 103,3 | 426,0 | 27,6 | 36,8 |
-| grand (190 cm) | 10,4 | 8,5 | 118,3 | 562,0 | 33,9 | 43,8 |
-| petit (160 cm) | 10,4 | 8,5 | 99,7 | 473,3 | 28,5 | 36,9 |
-
-Lecture :
-
-- le poids est **10× trop faible** (bug 1) et **invariant en taille** (le `/H³`
-  annule exactement la mise à l'échelle — deuxième confirmation du bug) ;
-- **taille et poitrine sont fausses** (107 cm de tour de taille pour un mesh fin,
-  490 à 700 cm de poitrine) → `slicePerimeter` inutilisable sur le tronc en l'état ;
-- les valeurs de **bras (28-38 cm) et de cuisse (37-48 cm)** sont dans des ordres de
-  grandeur plausibles : la méthode marche sur les membres, elle casse sur le tronc
-  (bande horizontale traversée par les bras + coupe non convexe).
-
-### Bug 5 (hypothèse prioritaire) — la pose bake peut déformer le haut du torse
-
-Le rendu actuel montre des épaules étroites et deux renflements de poitrine qui
-ressemblent à des seins. Or les cibles MakeHuman (§5) montrent que
-`universal-male-young-averagemuscle-averageweight` est **vide** : **le mesh de base est
-déjà un homme jeune moyen**, la morphologie « féminine » n'est donc probablement **pas**
-dans le mesh.
-
-Suspect n°1 : `src/lib/base/pose.ts`, adduction de 26° avec un fondu
-`smoothstep(-0.16, 0.22)` le long de l'axe du bras → des sommets du **haut du torse**
-(t > −0,16, donc « derrière » l'épaule) sont entraînés par la rotation, ce qui peut
-creuser les pectoraux et rentrer les épaules.
-
-**À faire avant de toucher aux masques** : rendre le mesh **sans pose** (ajouter un
-`?pose=0` de debug) et comparer. Si le torse est sain sans pose, corriger le fondu
-(p. ex. `smoothstep(0.02, 0.45)`) ou déplacer le pivot.
+- **Toujours vérifier l'indexation des tableaux plats** : `src[i]` ≠ `src[i*3]`
+  (cf. §3.6 b). C'est le bug le plus coûteux de la session.
+- `baseIndices` (les triangles du mesh de base) sert à la **normale de plante** : il doit
+  correspondre à la topologie du mesh **courant**.
+- Les **cibles MakeHuman** s'appliquent par index : ne jamais les appliquer à un autre
+  maillage (corruption silencieuse). Le drapeau `extras.targets` protège.
 
 ---
 
-## 5. Piste validée : les cibles de morphing MakeHuman (CC0)
+## 5. Le modèle 3D du corps
 
-### Ce que c'est
-
-MakeHuman construit ses personnages en partant du même `base.obj` puis en appliquant
-des **cibles** (deltas par sommet), éventuellement pondérées. Le dépôt contient :
+### 5.1 Chaîne actuelle
 
 ```
-makehuman/data/targets/macrodetails/universal-male-young-averagemuscle-averageweight.target
-makehuman/data/targets/macrodetails/universal-male-young-{min|max}muscle-{min|average|max}weight.target
-makehuman/data/targets/macrodetails/caucasian-male-young.target
-makehuman/data/targets/torso/torso-vshape-incr.target          ← taille fine / épaules larges
-makehuman/data/targets/torso/torso-muscle-pectoral-incr.target ← pectoraux
-makehuman/data/targets/torso/torso-muscle-dorsi-incr.target    ← dorsaux
-makehuman/data/targets/measure/measure-shoulder-dist-incr.target
-makehuman/data/targets/measure/measure-waist-circ-decr.target
-makehuman/data/targets/measure/measure-upperarm-circ-incr.target
-makehuman/data/targets/measure/measure-thigh-circ-incr.target
-makehuman/data/targets/measure/measure-calf-circ-incr.target
-makehuman/data/targets/measure/measure-neck-circ-incr.target
-makehuman/data/targets/hip/hip-scale-horiz-decr.target
-makehuman/data/targets/stomach/stomach-tone-incr.target
-... (des centaines d'autres : nez, bouche, yeux, âge, ethnie…)
+scripts/assets/makehuman-base.obj  (CC0)
+        │  scripts/prep-glb.py
+        ▼
+public/body.glb   ──►  src/lib/base/model.ts  ──►  GLTFLoader
+        │                    (positions, indices, quads, 125 repères)
+        │
+        └─► morphing (cibles MakeHuman CC0) ─► pose ─► subdivision ─► anatomie ─► rendu
 ```
 
-URL brute : `https://raw.githubusercontent.com/makehumancommunity/makehuman/master/makehuman/data/targets/<chemin>`
-Licence des **assets** : CC0 1.0 (`LICENSE.ASSETS.md` du même dépôt).
-⚠️ Le **code** de MakeHuman est AGPL3 : ne pas copier-coller `makehuman/lib/targets.py`
-dans le projet. Écrire un lecteur indépendant (le format est simple) et le documenter.
+### 5.2 Importer un modèle externe (sloyd.ai, free3d, Blender…)
 
-### Format `.target` — **confirmé** (2026-10-19, fichiers téléchargés et inspectés)
+```bash
+# 1) le fichier (glb/gltf/obj) est déposé dans scripts/assets/
+# 2) import + normalisation + repères :
+cd /root/muscu3d
+python3 scripts/import-body.py scripts/assets/monmodele.glb
+#    → écrit public/body-monmodele.glb (sans écraser body.glb)
+# 3) essai immédiat dans l'app, sans recompiler :
+#    http://127.0.0.1:5173/?model=body-monmodele.glb
+# 4) validation des repères :
+#    http://127.0.0.1:5173/?model=body-monmodele.glb&joints=1
+# 5) si tout va bien :
+python3 scripts/import-body.py scripts/assets/monmodele.glb --force
+```
 
-- **Texte brut ASCII** (pas binaire, pas compressé) :
-  - lignes `#` = en-tête. Licence **explicitement CC0** : « This asset was explicitly
-    released as CC0 in september 2020 », copyrights Manuel Bastioni (2014), Data
-    Collection AB, Joel Palmius, Jonas Hauquier (2020) ;
-  - ligne `# basemesh hm08` = version du mesh de base (celle de notre `base.obj`) ;
-  - puis **une ligne par sommet déplacé** : `<index> <dx> <dy> <dz>`,
-    ex. `760 .011 -.018 -.002`.
-- **Indices** : ceux du `base.obj` **complet** (19 158 sommets, helpers compris) → il
-  faut les utiliser **avant** le remappage du groupe `body` fait dans `prep-base.py`.
-- **Unités** : celles du `base.obj`, hauteur du corps = **16,659 unités** →
-  **1 unité ≈ 0,105 m** à 1,75 m. Exemple : un delta de 0,416 ≈ **4,4 cm**.
-- **Combinaison linéaire** : `mesh = base + Σ w_i × delta_i`, poids 0 → 1 (modèle
-  MakeHuman).
+Options de `import-body.py` : `--flip` (retourner), `--rot90`, `--out`, `--force`.
 
-### Tailles et contenu des cibles déjà téléchargées (repères)
+**Limites connues :**
+- Un modèle en **T-pose** : la pose de repos ramène les bras le long du corps
+  (le transport d'avant-bras gère la rotation) — à vérifier visuellement.
+- Un modèle **non riggé** : les repères sont déduits de la silhouette, donc approximatifs
+  (épaule, coude, main, hanche, genou, cheville). Les refining de chaque zone se font
+  dans `JOINT_SPEC` / `BONE_PATTERNS` de `import-body.py`.
+- Les **doigts et orteils** ne sont repérés que si le modèle expose des os
+  `finger-*` / `toe-*` (MakeHuman) — sinon les sillons de séparation sont ignorés.
+- Un modèle externe **n'a pas de cibles MakeHuman** : le morphing n'est plus que
+  procédural (les curseurs muscles auraont moins d'effet).
 
-| cible | sommets déplacés | delta max | ≈ cm |
-|---|---|---|---|
-| `universal-male-young-averagemuscle-averageweight` | **0** | — | — |
-| `universal-male-young-maxmuscle-averageweight` | 6 825 | 0,416 | 4,4 |
-| `universal-male-young-averagemuscle-maxweight` | 7 354 | 0,260 | 2,7 |
-| `caucasian-male-young` | 19 150 | 1,328 | 14,0 |
+### 5.3 Format glTF produit par `prep-glb.py`
 
-**Découverte majeure** : `universal-male-young-averagemuscle-averageweight` est **vide**
-(0 delta) → **le `base.obj` EST déjà le corps « homme jeune, muscle moyen, poids
-moyen »**. La silhouette jugée « féminine » vient donc de notre pose/morphing
-(voir §4 bug 5), pas du mesh. Conséquence : inutile de chercher une « base mâle »
-ailleurs ; il faut corriger la pose, puis empiler les cibles `muscle`/`weight` et les
-cibles anatomiques.
+- `mesh` : POSITION + NORMAL, indices triangles.
+- `nodes` : `body` + **un nœud par repère** (`l-shoulder`, `r-knee`, `l-finger-3-2`…).
+- `extras.quads` : faces quads d'origine, base64 de `Uint16` (indispensable à la
+  subdivision Catmull-Clark).
+- `extras.targets` : `true` si le mesh est la base MakeHuman (donc compatible cibles CC0).
 
-### Plan d'intégration recommandé (révisé)
+### 5.4 Sources de meshes CC0 déjà sur la machine
 
-1. `scripts/prep-targets.py` : **lecteur ASCII indépendant** (ne pas copier le code
-   AGPL3 de MakeHuman), téléchargement + cache des cibles dans
-   `scripts/assets/targets/`, puis export de **couches de déformation** dans
-   `src/lib/base/targets.ts` :
-   - encodage **creux** (seuls les sommets déplacés) : `Uint16` index + `Int16`×3 delta,
-     ≈ 8 octets/sommet → ~55 Ko par cible, ~0,7 Mo pour 12 cibles ;
-   - quantifier les deltas (×4000) avec un facteur d'échelle par couche ;
-   - conserver les conventions actuelles (pieds à 0, hauteur 1, visage +z).
-2. Ordre des couches, poids pilotés par les sliders :
-   `male` (`caucasian-male-young`, poids 1 par défaut) → `muscle` (min/average/max) →
-   `weight` (min/average/max) → `vshape`, `pectoral`, `dorsi`, `stomach-tone`,
-   `pelvis-tone`, `measure-shoulder-dist`, `measure-waist-circ`,
-   `measure-upperarm-circ`, `measure-thigh-circ`, `measure-calf-circ`,
-   `measure-neck-circ`.
-3. **Boxer brief procédural** (indispensable pour coller aux images) : sélectionner les
-   sommets hanches/cuisses, les décaler le long des normales (~8 mm), fermer par une
-   **ceinture** et des **bandes de cuisse**. Il suit ainsi toutes les morphologies et
-   masque le pubis.
-4. **Yeux** : `makehuman/data/eyes/low-poly/low-poly.obj` (CC0). Le groupe `body` est
-   watertight (paupières fermées) → vérifier au rendu avant d'investir.
-5. **Matière** : gris clay mat (roughness ~0,7, **sans clearcoat**), fond gris,
-   socle cylindrique biseauté (déjà présent), lumière 3 points douce.
-6. **Cheveux rasés** : phase 2 (texture procédurale), non bloquant.
-
-### Ce qu'il ne faut PAS refaire
-
-- Ne pas retenter un mesh loft maison (§3.1) : rejeté par l'utilisateur.
-- Ne pas chercher un autre mesh de base : celui-ci est propre, manifold, CC0, et
-  **déjà masculin**.
-- Ne pas appliquer `caucasian-male-young` sans vérifier visuellement : c'est une couche
-  lourde (19 150 sommets, jusqu'à 14 cm) ; l'essayer en premier à poids 1 sur la base
-  **non posée**.
+`scripts/assets/makehuman-base.obj` (MakeHuman base mesh, CC0 1.0 — voir
+`scripts/assets/README.md` pour la provenance). Les cibles de morphing sont dans
+`scripts/assets/targets/*.target` (MakeHuman, CC0).
 
 ---
 
@@ -598,7 +397,6 @@ cibles anatomiques.
 Contexte machine complet : **`/root/AGENTS.md`** (à lire). L'essentiel pour ce projet :
 
 - **Serveur de dev** : `cd /root/muscu3d && npm run dev` → `http://127.0.0.1:5173`.
-  Vérifier avec `curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1:5173/`.
 - **Screenshot headless** (Firefox n'a pas de WebGL ici, **utiliser Chromium**) :
 
   ```bash
@@ -609,17 +407,36 @@ Contexte machine complet : **`/root/AGENTS.md`** (à lire). L'essentiel pour ce 
   #   --ignore-gpu-blocklist --user-data-dir=/tmp/chrome-shot-XXXX \
   #   --window-size=1400,900 --virtual-time-budget=12000 --screenshot=… URL
   ```
-
-- **Typecheck** : `npx tsc --noEmit` (doit rester vert avant toute capture).
-- **Calibration** : `npx tsx scripts/calibrate.ts` (⚠️ bug 4).
-- **Deep links de test** (dans l'URL) :
-  `?view=face|profil|dos|troisquarts` · `?wire=1` · `?preset=sec|athletique|bodybuilder|massif`
-  · `?mode=target` · `?cam=x,y,z&target=x,y,z` (caméra libre pour les gros plans).
-- **Un seul gros job à la fois** (build, install, capture) : ~2 Go de RAM libres.
+  ⚠️ Une capture prend **40 à 60 s** (rendu logiciel + GTAO) : lancer en *background*,
+  ne pas blinder.
+- **Typecheck** : `npx tsc --noEmit`.
+- **Scripts Node** : `node_modules/.bin/tsx scripts/....ts` (tsx est en devDependency).
+  ⚠️ `npx tsx` peut rester bloqué sur une vérification de registre : utiliser le binaire
+  local.
+- **Deep links de test** :
+  `?view=face|profil|dos|troisquarts` · `?wire=1` · `?joints=1` (repères) ·
+  `?model=xxx.glb` (autre modèle) · `?subdiv=0|1|2` · `?anat=0` · `?muscle=0` ·
+  `?pose=0` · `?nofoot=1` · `?noleg=1` · `?shadow=0` · `?fat=20&lats=30&arms=80` ·
+  `?cam=x,y,z&target=x,y,z` (caméra libre) · `?preset=sec|athletique|bodybuilder|massif`.
+- **Un seul gros job à la fois** : ~2 Go de RAM libres.
 - **Jamais `rm -rf`.** Utiliser `trash <fichier>`.
-- `npm`/`npx` résolvent vers les binaires **Termux**, `node` vers Ubuntu : ne pas
-  s'étonner, vérifier avec `command -v`.
+- `npm`/`npx` résolvent vers les binaires **Termux**, `node` vers Ubuntu.
 - Pas de systemd/cron : les services vivent en tmux ou en boucle.
+
+### Scripts de diagnostic (`scripts/dev/`)
+
+| script | ce qu'il contrôle |
+|---|---|
+| `load-model.ts` | charge le `.glb` (obligatoire avant les autres) |
+| `subdiv-check.ts` | subdivision : volume, bbox, temps par image |
+| `measure.ts` | tours de bras/cuisse/poitrine par coupe de plan (fiable) |
+| `check-topo.ts` | faces dégénérées / orientation du mesh de base |
+| `find-crease.ts` | localise les plis francs du maillage |
+| `probe-sole.ts` | symétrie de la normale de plante (les deux pieds) |
+| `probe-symetrie.ts` | symétrie gauche/droite du mesh (base vs morphing) |
+| `probe-cibles-pied.ts` | les cibles de pieds rétrécissent-elles le bon pied ? |
+| `probe-pubis.ts` | position de la surface pubienne / des génitaux |
+| `probe-toes.ts`, `probe-winding.ts` | repères d'orteils, orientation des faces |
 
 ---
 
@@ -627,63 +444,41 @@ Contexte machine complet : **`/root/AGENTS.md`** (à lire). L'essentiel pour ce 
 
 Ordre imposé par l'utilisateur — **ne pas sauter d'étape** :
 
-1. ✅/⏳ **Qualité du corps 3D — PRIORITÉ ABSOLUE** (en cours) : obtenir le rendu du
-   §1bis, dans cet ordre :
-   1. rendre le mesh **sans pose** (`?pose=0`) → vérifier/corriger le bug 5 ;
-   2. écrire `scripts/prep-targets.py` (lecteur ASCII, §5) et empiler `caucasian-male-young`
-      puis `maxmuscle` / `maxweight` → silhouettes masculines réalistes ;
-   3. générer le **boxer brief** procédural ;
-   4. ajouter la **définition anatomique** manquante (masques procéduraux : abdos, serratus,
-      sartorius, séparations) ;
-   5. matière grise mate + cadrages de contrôle (face/profil/dos/3-4, plongée,
-      contre-plongée, gros plans) ;
-   6. **validation utilisateur** (captures) avant tout le reste.
-2. **Saisie du poids réel** — exigence explicite : « c'est pas un truc estimé ».
-   L'utilisateur doit pouvoir entrer son vrai poids (et éventuellement ses mensurations)
-   pour recaler le modèle. Le poids estimé reste un fallback, clairement étiqueté.
-3. **Refonte UI/UX** — constat utilisateur : « on comprend rien ». Repenser la
-   hiérarchie : d'abord « où j'en suis », puis « où je veux aller », puis le plan.
-4. **Générateur de programme** (salle / maison / rien, horizon au choix, débutant →
-   avancé) — **le programme doit réellement s'afficher après saisie des infos**
-   (défaut constaté en v1 : rien ne s'affichait).
-5. **Nutrition** conditionnelle (prise de masse / sèche / maintien).
-6. **Timeline bimensuelle** : mise à jour du vecteur corporel + avant/après 3D.
-7. **Jauge de faisabilité** objectif vs horizon, avec explication des limites et
-   budget d'erreur ±4-8 kg assumé.
+1. ✅ **Modèle 3D en fichier** (`public/body.glb` + `GLTFLoader`) — **FAIT**.
+2. ⏳ **Modèle externe** : l'utilisateur télécharge (sloyd.ai / free3d) → import →
+   validation des repères → comparaison avec la référence.
+3. ⏳ **Rendu studio** — fait, à affiner (grade, fond, cadrages).
+4. ✅ **Densité de maillage** (subdivision) — **FAIT**.
+5. ✅ **Pose / pieds** — **FAIT** (§3.6).
+6. ⏳ **Mains** : doigts réellement séparés, malgré le maillage de base.
+7. **Saisie du poids réel** — exigence explicite : « c'est pas un truc estimé ».
+8. **Refonte UI/UX** — constat utilisateur : « on comprend rien ».
+9. **Générateur de programme** (salle / maison / rien, horizon au choix).
+10. **Nutrition** conditionnelle (prise de masse / sèche / maintien).
+11. **Timeline bimensuelle** : mise à jour du vecteur corporel + avant/après 3D.
+12. **Jauge de faisabilité** objectif vs horizon, budget d'erreur ±4-8 kg assumé.
 
 ---
 
 ## 8. Journal des manipulations déjà effectuées
 
 - `git init` + commit de la v1 loft ; identité locale au dépôt.
-- Téléchargement de `makehuman-base.obj` → `scripts/assets/` (+ README de provenance).
-- Écriture de `scripts/prep-base.py` (OBJ → `src/lib/base/data.ts`, quantifié Int16
-  ×3000, base64) puis exécution.
-- Écriture de `src/lib/base/mesh.ts` (décodage, `getBaseMesh`, `geometryFromPositions`).
-- Écriture de `src/lib/base/pose.ts` (pose de repos bakeée).
-- Réécriture complète de `src/lib/body.ts` (squelette logiciel, poids de peau, masques,
-  morphing, métriques) — `App.tsx` et `viewer.ts` **inchangés** grâce à l'API conservée.
-- `npx tsc --noEmit` : vert.
-- Captures `/tmp/opencode/m3-base-34.png` et `m3-base-face.png`
-  (copiées dans `docs/etat-2026-10-19-*.png`) → diagnostic §3.3.
-- Écriture de `scripts/shot.sh` et `scripts/calibrate.ts`.
-- Téléchargement et inspection de 4 cibles MakeHuman (`macrodetails/`) : format ASCII
-  confirmé, tailles et deltas mesurés (§5).
-- Copie des **8 images de référence** dans `docs/reference/` avec un nom par vue
-  (mappage : planche contact 4×2 générée via ffmpeg depuis `/sdcard/Download/image_*.jpg`).
-- Rédaction/mise à jour de `AGENTS.md` : §0 consigne, §1bis goal visuel + chemins,
-  §4 bug 5 (pose), §5 format + plan confirmés.
+- Téléchargement de `makehuman-base.obj` (CC0) + des cibles MakeHuman (CC0).
+- `scripts/prep-base.py` (.obj → base64 TS) puis `scripts/prep-targets.py`
+  (cibles .target → `targets.ts`).
+- `src/lib/base/pose.ts` : transport d'avant-bras, pose des doigts, rotation de jambe.
+- `src/lib/body.ts` : squelette logiciel, poids de peau, masques, morphing, mesures.
+- `src/lib/base/details.ts` : anatomie gravée (torse, dos, jambes, bras).
+- `src/lib/base/genitals.ts` : génitaux procéduraux (resculptés en session 3).
+- `src/lib/base/bump.ts` : bump map des abdominaux + grain de cuir rasé.
+- `src/lib/base/face.ts` : iris annulaire + pupille en creux (session 3).
+- `src/lib/base/subdiv.ts` : subdivision Catmull-Clark quads + triangles (session 3).
+- `src/lib/base/model.ts` + `scripts/prep-glb.py` : le corps devient un `.glb` (session 3).
+- `scripts/import-body.py` : import d'un modèle externe (obj/glb) (session 3).
+- `src/scene/viewer.ts` : GTAO, ACES, ombre de contact, vignette, studio IBL.
+- `scripts/shot.sh`, `scripts/calibrate.ts`, `scripts/dev/*` (diagnostics).
 
 ### Fichiers à ne PAS éditer à la main
 
-- `src/lib/base/data.ts` — **généré**. Modifier `scripts/prep-base.py` puis régénérer
-  (`python3 scripts/prep-base.py`).
-- `docs/etat-2026-10-19-*.png` — captures d'état, à remplacer par les suivantes.
-
-### Raccourcis de lecture du code
-
-- `src/lib/base/mesh.ts` — décodage des données et `geometryFromPositions(pos)` :
-  crée une `BufferGeometry` (positions + index + normales lissées) depuis un
-  `Float32Array` de positions.
-- `src/lib/base/pose.ts` — `getPosedBase()` : applique la pose de repos (bras
-  descendus) une seule fois et renvoie positions + articulations + normales.
+- `src/lib/base/targets.ts` — **généré** par `scripts/prep-targets.py`.
+- `public/body.glb` — **généré** par `scripts/prep-glb.py` (ou `import-body.py`).
