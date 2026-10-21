@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { getPosedBase, posePositions } from './base/pose'
 import { getBaseMesh, geometryFromPositions } from './base/mesh'
+import { getSubdivider } from './base/subdiv'
 import { applyTarget } from './base/morph'
 import { buildGenitals, findPubis } from './base/genitals'
 import { absField, applyBumpShader, buildBumpTexture, bumpUniforms } from './base/bump'
@@ -162,9 +163,13 @@ interface Bone {
 
 let bonesCache: Bone[] | null = null
 
-function getBones(): Bone[] {
-  if (bonesCache) return bonesCache
-  const { joints } = getPosedBase()
+/**
+ * Squelette logiciel : segments issus des repères du mesh de base.
+ * Les repères sont ceux de la pose courante (ils changent avec le morphing),
+ * le cache est donc invalidé à chaque construction.
+ */
+function getBones(joints: Record<string, THREE.Vector3>): Bone[] {
+  bonesCache = null
   const j = (name: string) => joints[name]
   const list: Bone[] = [
     { key: 'pelvis', a: j('pelvis'), b: j('spine-4'), sigma: 0.075 },
@@ -235,10 +240,16 @@ export interface Masks {
 
 let masksCache: Masks | null = null
 
-export function getMasks(): Masks {
-  if (masksCache) return masksCache
-  const { positions } = getPosedBase()
-  const bones = getBones()
+/**
+ * Masques de déformation, calculés sur le maillage courant (dense).
+ * Ils décrivent l'appartenance de chaque sommet à une région du corps :
+ * graisse, ventre, pectoraux, dorsaux, abdos, bras, cuisses…
+ */
+export function computeMasks(
+  positions: Float32Array,
+  joints: Record<string, THREE.Vector3>,
+): Masks {
+  const bones = getBones(joints)
   const n = positions.length / 3
   const nb = bones.length
   const W = new Float32Array(n * nb)
@@ -365,8 +376,15 @@ export function getMasks(): Masks {
     masks.calf[i] = clamp(wLleg * gauss(tShin, 0.3, 0.32), 0, 1)
   }
 
-  masksCache = masks
   return masks
+}
+
+/** Masques du maillage de base (pose de repos sans morphing) — usage debug. */
+export function getMasks(): Masks {
+  if (masksCache) return masksCache
+  const { positions, joints } = getPosedBase()
+  masksCache = computeMasks(positions, joints)
+  return masksCache
 }
 
 // ---------------------------------------------------------------------------
@@ -374,7 +392,7 @@ export function getMasks(): Masks {
 // ---------------------------------------------------------------------------
 
 /** Volume signé (m³) d'un maillage fermé indexé. */
-function meshVolume(pos: Float32Array, indices: Uint16Array): number {
+function meshVolume(pos: Float32Array, indices: Uint16Array | Uint32Array): number {
   let v = 0
   for (let i = 0; i < indices.length; i += 3) {
     const a = indices[i] * 3
@@ -447,30 +465,144 @@ export interface BodyBuild {
   genitals: THREE.BufferGeometry | null
   metrics: BodyMetrics
   positions: Float32Array
+  /** repères anatomiques après morphing + pose (normalisés) */
+  joints: Record<string, THREE.Vector3>
+}
+
+/**
+ * Niveau de subdivision Catmull-Clark.
+ * 0 = mesh brut (13 380 sommets, ~2 cm d'arête) ; 1 = 53 512 (~1 cm) ;
+ * 2 = 214 048 (~5 mm). `?subdiv=n` pour forcer une valeur.
+ */
+function subdivLevel(): number {
+  if (typeof location === 'undefined') return 1
+  const raw = new URLSearchParams(location.search).get('subdiv')
+  if (raw === null) return 1
+  const n = Number(raw)
+  return Number.isFinite(n) ? clamp(Math.round(n), 0, 2) : 1
+}
+
+/** Normales lissées d'un maillage indexé (sans allocation Three.js). */
+function computeNormals(pos: Float32Array, idx: Uint32Array): Float32Array {
+  const n = new Float32Array(pos.length)
+  for (let t = 0; t < idx.length; t += 3) {
+    const a = idx[t] * 3
+    const b = idx[t + 1] * 3
+    const c = idx[t + 2] * 3
+    const e1x = pos[b] - pos[a]
+    const e1y = pos[b + 1] - pos[a + 1]
+    const e1z = pos[b + 2] - pos[a + 2]
+    const e2x = pos[c] - pos[a]
+    const e2y = pos[c + 1] - pos[a + 1]
+    const e2z = pos[c + 2] - pos[a + 2]
+    const nx = e1y * e2z - e1z * e2y
+    const ny = e1z * e2x - e1x * e2z
+    const nz = e1x * e2y - e1y * e2x
+    n[a] += nx
+    n[a + 1] += ny
+    n[a + 2] += nz
+    n[b] += nx
+    n[b + 1] += ny
+    n[b + 2] += nz
+    n[c] += nx
+    n[c + 1] += ny
+    n[c + 2] += nz
+  }
+  for (let i = 0; i < n.length; i += 3) {
+    const l = Math.hypot(n[i], n[i + 1], n[i + 2]) || 1
+    n[i] /= l
+    n[i + 1] /= l
+    n[i + 2] /= l
+  }
+  return n
+}
+
+/** Drapeaux de debug via l'URL : ?anat=0 (pas d'anatomie), ?muscle=0, ?pose=0 */
+function debugFlag(name: string, def = true): boolean {
+  if (typeof location === 'undefined') return def
+  const v = new URLSearchParams(location.search).get(name)
+  if (v === null) return def
+  return v !== '0'
+}
+
+/**
+ * Repères articulaires après morphing.
+ *
+ * Chaque repère est déplacé du déplacement moyen des K sommets les plus
+ * proches (pondéré par 1/d²). C'est indispensable : les repères du mesh de
+ * base sont à l'INTÉRIEUR du corps, et les cibles MakeHuman déplacent la
+ * surface de plusieurs centimètres. Sans cette correction, la pose
+ * partirait d'un faux axe de membre (calculé sur un sommet de peau au lieu
+ * de l'articulation) et les cuisses se tordraient en un pli en V.
+ */
+function morphedJoints(
+  base: { positions: Float32Array; joints: Record<string, THREE.Vector3> },
+  morphed: Float32Array,
+): Record<string, THREE.Vector3> {
+  const K = 8
+  const nV = base.positions.length / 3
+  const out: Record<string, THREE.Vector3> = {}
+  for (const [name, j] of Object.entries(base.joints)) {
+    // K plus proches sommets du repère
+    const bi = new Int32Array(K)
+    const bd = new Float64Array(K).fill(Infinity)
+    for (let i = 0; i < nV; i++) {
+      const dx = base.positions[i * 3] - j.x
+      const dy = base.positions[i * 3 + 1] - j.y
+      const dz = base.positions[i * 3 + 2] - j.z
+      const d = dx * dx + dy * dy + dz * dz
+      if (d >= bd[K - 1]) continue
+      let p = K - 1
+      while (p > 0 && bd[p - 1] > d) {
+        bd[p] = bd[p - 1]
+        bi[p] = bi[p - 1]
+        p--
+      }
+      bd[p] = d
+      bi[p] = i
+    }
+    let sx = 0
+    let sy = 0
+    let sz = 0
+    let sw = 0
+    for (let k = 0; k < K; k++) {
+      if (!Number.isFinite(bd[k])) continue
+      const w = 1 / (bd[k] + 1e-5)
+      const i = bi[k]
+      sx += (morphed[i * 3] - base.positions[i * 3]) * w
+      sy += (morphed[i * 3 + 1] - base.positions[i * 3 + 1]) * w
+      sz += (morphed[i * 3 + 2] - base.positions[i * 3 + 2]) * w
+      sw += w
+    }
+    out[name] = new THREE.Vector3(j.x + sx / sw, j.y + sy / sw, j.z + sz / sw)
+  }
+  return out
 }
 
 export function buildBodyGeometry(p: BodyParams): BodyBuild {
   const base = getBaseMesh()
-  const posed = getPosedBase()
-  const masks = getMasks()
-  const n = base.positions.length / 3
 
   // 1. morphologie : cibles MakeHuman empilées sur le mesh brut
   const morphed = new Float32Array(base.positions)
   const weights = debugLayerWeights() ?? getLayerWeights(p)
   for (const [name, w] of Object.entries(weights)) applyTarget(morphed, name, w)
 
-  // 2. pose de repos appliquée au corps morphé
-  const pq = posePositions(morphed, base.joints)
-  const src = pq.positions
+  // 2. pose de repos appliquée au corps morphé (au niveau de base : rapide)
+  const pq = posePositions(morphed, morphedJoints(base, morphed))
 
-  // 3. normales du corps morphé + posé (les masques s'appuient dessus)
-  const tmpGeo = new THREE.BufferGeometry()
-  tmpGeo.setAttribute('position', new THREE.BufferAttribute(src.slice(), 3))
-  tmpGeo.setIndex(new THREE.BufferAttribute(base.indices.slice(), 1))
-  tmpGeo.computeVertexNormals()
-  const nrm = new Float32Array(tmpGeo.getAttribute('normal').array as ArrayLike<number>)
-  tmpGeo.dispose()
+  // 3. subdivision Catmull-Clark : on densifie AVANT de graver l'anatomie,
+  //    sinon les rainures de 6 mm seraient mangées par la maille de 2 cm.
+  const level = subdivLevel()
+  const dense = getSubdivider(base.quads, level).apply(pq.positions)
+  const src = dense.positions
+  const idx = dense.indices
+  const n = src.length / 3
+
+  // 4. normales du maillage dense (les masques s'appuient dessus)
+  const nrm = computeNormals(src, idx)
+
+  // 5. masques de déformation sur le maillage dense
+  const masks = computeMasks(src, pq.joints)
 
   const H = clamp(p.height, 140, 210) / 100
   setBumpHeight(H * 100)
@@ -501,6 +633,7 @@ export function buildBodyGeometry(p: BodyParams): BodyBuild {
   const dCalf = calfD * 0.011
 
   const out = new Float32Array(src.length)
+  const muscleOn = debugFlag('muscle')
   for (let i = 0; i < n; i++) {
     const x = src[i * 3]
     const y = src[i * 3 + 1]
@@ -509,39 +642,52 @@ export function buildBodyGeometry(p: BodyParams): BodyBuild {
     const ny = nrm[i * 3 + 1]
     const nz = nrm[i * 3 + 2]
 
-    const alongNormal =
-      dFat * masks.fat[i] +
-      dTrap * masks.trap[i] +
-      dDelt * masks.delt[i] +
-      dArm * masks.arm[i] +
-      dFore * masks.fore[i] +
-      dThigh * masks.thigh[i] +
-      dCalf * masks.calf[i]
-    const alongZ = dBelly * masks.belly[i] + dPec * masks.pec[i] + dAbs * masks.abs[i] - dGlute * masks.glute[i]
-    const alongX = dLat * masks.lat[i] * masks.side[i]
+    const alongNormal = muscleOn
+      ? dFat * masks.fat[i] +
+        dTrap * masks.trap[i] +
+        dDelt * masks.delt[i] +
+        dArm * masks.arm[i] +
+        dFore * masks.fore[i] +
+        dThigh * masks.thigh[i] +
+        dCalf * masks.calf[i]
+      : 0
+    const alongZ = muscleOn
+      ? dBelly * masks.belly[i] + dPec * masks.pec[i] + dAbs * masks.abs[i] - dGlute * masks.glute[i]
+      : 0
+    const alongX = muscleOn ? dLat * masks.lat[i] * masks.side[i] : 0
 
     out[i * 3] = (x + nx * alongNormal + alongX) * H
     out[i * 3 + 1] = (y + ny * alongNormal) * H
     out[i * 3 + 2] = (z + nz * alongNormal + alongZ) * H
   }
 
-  // 4. définition anatomique gravée (pectoraux, abdos, serratus, jambes)
-  const anat = applyAnatomy(out, nrm, { joints: pq.joints, masks, H })
+  // 6. définition anatomique gravée (pectoraux, abdos, serratus, jambes)
+  const anat = debugFlag('anat')
+    ? applyAnatomy(out, nrm, { joints: pq.joints, masks, H })
+    : { gx: new Float32Array(n), gy: new Float32Array(n) }
 
-  const geometry = geometryFromPositions(out)
-  // normales analytiques : le maillage est trop grossier pour porter seul
-  // des rainures de 6 mm, le relief fin est réinjecté ici
+  // 7. ancrage au sol : les pieds doivent reposer exactement sur le socle.
+  //    La pose (rotation de la jambe autour de la hanche) soulève le pied de
+  //    quelques millimètres ; sans cette correction le corps flotte.
+  let minY = Infinity
+  for (let i = 1; i < out.length; i += 3) if (out[i] < minY) minY = out[i]
+  if (Number.isFinite(minY) && minY !== 0) {
+    for (let i = 1; i < out.length; i += 3) out[i] -= minY
+  }
+
+  const geometry = geometryFromPositions(out, idx)
+  // normales analytiques : le relief fin des rainures est réinjecté ici
   applyBumpNormals(geometry, anat)
 
   // --- métriques ---
   // `out` est déjà à l'échelle réelle : le volume est en m³.
   // K compense la différence entre volume géométrique et masse réelle
   // (densité ~1,03 kg/L, plus les organes non modélisés).
-  const volM3 = meshVolume(out, base.indices)
+  const volM3 = meshVolume(out, idx)
   const weight = volM3 * 1000 * 1.02
   const lean = weight * (1 - p.fat / 100)
 
-  const bones = getBones()
+  const bones = getBones(pq.joints)
   const b = (key: string) => bones.find((bb) => bb.key === key)!
   const up = new THREE.Vector3(0, 1, 0)
   const xAxis = new THREE.Vector3(1, 0, 0)
@@ -626,7 +772,7 @@ export function buildBodyGeometry(p: BodyParams): BodyBuild {
   const genitals = buildGenitals(pubis, H / 1.75)
   genitals.scale(H, H, H)
 
-  return { geometry, genitals, metrics, positions: out }
+  return { geometry, genitals, metrics, positions: out, joints: pq.joints }
 }
 
 /** Groupe prêt à afficher : solide + maillage filaire superposé. */
@@ -635,10 +781,13 @@ export function buildBody(p: BodyParams): { group: THREE.Group; metrics: BodyMet
   const group = new THREE.Group()
   const solid = new THREE.Mesh(geometry, BODY_MAT)
   solid.userData.isWire = false
+  solid.castShadow = true
+  solid.receiveShadow = true
   group.add(solid)
   if (genitals) {
     const g = new THREE.Mesh(genitals, BODY_MAT)
     g.userData.isWire = false
+    g.castShadow = true
     group.add(g)
   }
   const wire = new THREE.Mesh(geometry, WIRE_MAT)
@@ -648,10 +797,16 @@ export function buildBody(p: BodyParams): { group: THREE.Group; metrics: BodyMet
   return { group, metrics }
 }
 
+/**
+ * Matière « plâtre de studio » : gris mat légèrement chaud, sans métal,
+ * avec un spéculaire large et doux (les muscles captent la lumière comme
+ * sur la sculpture de référence).
+ */
 export const BODY_MAT = new THREE.MeshStandardMaterial({
-  color: 0xb0ada8,
-  roughness: 0.86,
+  color: 0x8d8b87,
+  roughness: 0.6,
   metalness: 0,
+  envMapIntensity: 0.85,
 })
 
 // Relief fin des abdominaux : la géométrie est trop grossière pour le graver,

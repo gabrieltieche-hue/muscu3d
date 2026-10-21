@@ -3,7 +3,11 @@
 
 Sortie : src/lib/base/data.ts
   - BASE_POS_Q : positions quantifiées Int16 (x, y, z) encodées en base64
-  - BASE_INDEX  : indices Uint16 encodés en base64
+  - BASE_INDEX  : indices Uint16 encodés en base64 (triangles, pour l'affichage)
+  - BASE_QUADS  : faces quads Uint16 encodées en base64 (pour la subdivision
+                  Catmull-Clark : le maillage source est en quads, et la
+                  subdivision doit l'être aussi, sinon la diagonale de
+                  triangulation laisse une vallée visible sur la surface)
   - BASE_SCALE  : diviseur des positions quantifiées (positions = q / BASE_SCALE)
   - JOINTS      : repères anatomiques normalisés (hauteur du corps = 1)
   - BASE_STATS  : infos utiles (hauteur, volume...)
@@ -111,18 +115,29 @@ def main():
             idx += [remap[f[0]], remap[f[k]], remap[f[k + 1]]]
     idx_b64 = base64.b64encode(struct.pack("<%dH" % len(idx), *idx)).decode()
 
+    # faces quads (le maillage source n'a que des quads : 13 378)
+    quads = []
+    for f in body:
+        assert len(f) == 4, ("face non quad", f)
+        quads += [remap[f[0]], remap[f[1]], remap[f[2]], remap[f[3]]]
+    quads_b64 = base64.b64encode(struct.pack("<%dH" % len(quads), *quads)).decode()
+
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with open(OUT, "w") as f:
         f.write("// Généré par scripts/prep-base.py — NE PAS ÉDITER À LA MAIN.\n")
         f.write("// Source : MakeHuman base.obj (CC0 1.0). Voir scripts/assets/README.md.\n\n")
         f.write(f"export const BASE_SCALE = {SCALE}\n")
         f.write(f"export const BASE_VERTEX_COUNT = {len(nverts)}\n")
-        f.write(f"export const BASE_INDEX_COUNT = {len(idx)}\n\n")
+        f.write(f"export const BASE_INDEX_COUNT = {len(idx)}\n")
+        f.write(f"export const BASE_QUAD_COUNT = {len(quads) // 4}\n\n")
         f.write("export const BASE_POS_Q =\n  '")
         f.write(pos_b64)
         f.write("'\n\n")
         f.write("export const BASE_INDEX =\n  '")
         f.write(idx_b64)
+        f.write("'\n\n")
+        f.write("export const BASE_QUADS =\n  '")
+        f.write(quads_b64)
         f.write("'\n\n")
         f.write("export const JOINTS: Record<string, [number, number, number]> = ")
         f.write(json.dumps(joints, indent=2))

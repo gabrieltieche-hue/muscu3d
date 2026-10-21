@@ -43,7 +43,7 @@ const FOREARM_DIR = new THREE.Vector3(0.12, -0.975, 0.19).normalize()
 /** Cible de la jambe : 3,8° d'ouverture (pieds à ~20 cm l'un de l'autre). */
 const THIGH_DIR = new THREE.Vector3(0.067, -1, 0).normalize()
 /** Rotation du pied vers l'extérieur (toe-out), en degrés. */
-const FOOT_TOE_OUT = 7
+const FOOT_TOE_OUT = 6
 /** Activation du relâchement des doigts (debug). */
 const FINGERS_ON = true
 
@@ -118,6 +118,48 @@ function rotatePoint(p: THREE.Vector3, q: THREE.Quaternion, pivot: THREE.Vector3
   return p.clone().sub(pivot).applyQuaternion(q).add(pivot)
 }
 
+/**
+ * Normale de la plante du pied.
+ *
+ * Moyenne des normales des triangles dont les trois sommets appartiennent
+ * entièrement au pied et qui regardent vers le bas. C'est cette normale qu'il
+ * faut remettre à l'horizontale après la rotation de la jambe : sans cela la
+ * plante reste inclinée et le corps repose sur le bord externe du pied.
+ */
+function soleNormal(
+  positions: Float32Array,
+  indices: Uint16Array,
+  footWeight: (i: number) => number,
+): THREE.Vector3 {
+  const n = new THREE.Vector3()
+  for (let t = 0; t < indices.length; t += 3) {
+    const a = indices[t]
+    const b = indices[t + 1]
+    const c = indices[t + 2]
+    if (footWeight(a) < 0.98 || footWeight(b) < 0.98 || footWeight(c) < 0.98) continue
+    const ax = positions[a * 3]
+    const ay = positions[a * 3 + 1]
+    const az = positions[a * 3 + 2]
+    const e1x = positions[b * 3] - ax
+    const e1y = positions[b * 3 + 1] - ay
+    const e1z = positions[b * 3 + 2] - az
+    const e2x = positions[c * 3] - ax
+    const e2y = positions[c * 3 + 1] - ay
+    const e2z = positions[c * 3 + 2] - az
+    const nx = e1y * e2z - e1z * e2y
+    const ny = e1z * e2x - e1x * e2z
+    const nz = e1x * e2y - e1y * e2x
+    const len = Math.hypot(nx, ny, nz)
+    if (len < 1e-12) continue
+    if (ny > -0.2 * len) continue // on ne garde que les faces vers le bas
+    n.x += nx
+    n.y += ny
+    n.z += nz
+  }
+  if (n.lengthSq() < 1e-12) n.set(0, -1, 0)
+  return n.normalize()
+}
+
 /** Squelette minimal pour la pose (avant transformation des repères). */
 function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vector3>, strength: number) {
   const joints: Record<string, THREE.Vector3> = {}
@@ -127,32 +169,19 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
   const src = new Float32Array(positions)
 
   /**
-   * Les cibles MakeHuman déplacent les sommets AVANT la pose : l'axe du bras
-   * doit donc être reconstruit sur la géométrie morphée, sinon la
-   * classification des sommets (bras / main) est fausse et la main est
-   * déchirée. On prend le sommet morphedé le plus proche de l'articulation.
+   * Os et axes : on utilise les REPÈRES ARTICULAIRES (qui suivent le
+   * morphing, cf. morphedJoints dans lib/body.ts), et non le sommet de peau
+   * le plus proche. Un repère est à l'intérieur du corps : prendre un
+   * sommet de peau donnait un faux axe de membre, et la cuisse se tordait
+   * en un pli en V.
    */
-  const nearestIndex = new Map<string, number>()
-  const nearestOf = (key: string): THREE.Vector3 => {
-    let bi = nearestIndex.get(key)
-    if (bi === undefined) {
-      const j = joints[key]
-      let bd = Infinity
-      bi = 0
-      for (let i = 0; i < src.length; i += 3) {
-        const d =
-          (src[i] - j.x) ** 2 + (src[i + 1] - j.y) ** 2 + (src[i + 2] - j.z) ** 2
-        if (d < bd) {
-          bd = d
-          bi = i
-        }
-      }
-      nearestIndex.set(key, bi)
-    }
-    return new THREE.Vector3(src[bi], src[bi + 1], src[bi + 2])
+  const jointOf = (key: string): THREE.Vector3 => {
+    const j = joints[key]
+    return j ? j.clone() : new THREE.Vector3()
   }
 
   const sideSign = (side: 'l' | 'r') => (side === 'l' ? 1 : -1)
+  const baseIndices = getBaseMesh().indices
   // poids de transition (aisselle, entre-jambes) : ces sommets sont
   // comprimés par la déformation, on les lissera à la fin
   const transition = new Float32Array(positions.length / 3)
@@ -163,12 +192,12 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
    * se déchire : les sommets du bras partaient à 100 % avec le bras pendant
    * que ceux du torse restaient en place.
    */
-  const spine1 = nearestOf('spine-1')
-  const spine2 = nearestOf('spine-2')
-  const spine3 = nearestOf('spine-3')
-  const spine4 = nearestOf('spine-4')
-  const pelvisJ = nearestOf('pelvis')
-  const neckJ = nearestOf('neck')
+  const spine1 = jointOf('spine-1')
+  const spine2 = jointOf('spine-2')
+  const spine3 = jointOf('spine-3')
+  const spine4 = jointOf('spine-4')
+  const pelvisJ = jointOf('pelvis')
+  const neckJ = jointOf('neck')
 
   for (const side of ['l', 'r'] as const) {
     const s = sideSign(side)
@@ -186,9 +215,9 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
     // du bras est transportée le long d'une polyligne cible, avec une rotation
     // locale continue (tangente lissée). Le coude se déplie donc *sans*
     // discontinuité, comme un vrai bras qui se tend.
-    const shoulder = nearestOf(`${side}-shoulder`)
-    const elbow0 = nearestOf(`${side}-elbow`)
-    const hand0 = nearestOf(`${side}-hand`)
+    const shoulder = jointOf(`${side}-shoulder`)
+    const elbow0 = jointOf(`${side}-elbow`)
+    const hand0 = jointOf(`${side}-hand`)
     const L1 = shoulder.distanceTo(elbow0)
     const L2 = elbow0.distanceTo(hand0)
     const elbow2 = shoulder.clone().addScaledVector(dirOut, L1)
@@ -310,7 +339,12 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
         w = (wArm / Math.max(wArm + wTorso, 1e-6)) * wStart
       }
       w *= strength
-      if (w > 0.02 && w < 0.98) transition[i / 3] = Math.max(transition[i / 3], 1 - Math.abs(w - 0.5) * 2)
+      if (w > 0.02 && w < 0.98) {
+        // bande étroite autour du partage 50/50 : c'est là que la peau est
+        // réellement comprimée entre deux membres.
+        const t = 1 - Math.abs(w - 0.5) * 2
+        transition[i / 3] = Math.max(transition[i / 3], Math.max(0, (t - 0.5) * 2))
+      }
       if (w <= 0.002) continue
       off.copy(v).sub(rp).applyQuaternion(q)
       const nx = tp.x + off.x
@@ -349,8 +383,8 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
       const palmN = finger(1, 1).clone().sub(knuckle).normalize()
       const curlAxis = new THREE.Vector3().crossVectors(dir3, palmN).normalize()
 
-      // 1) flexion vers la paume (22°)
-      const qCurl = new THREE.Quaternion().setFromAxisAngle(curlAxis, (11 * Math.PI) / 180)
+      // 1) flexion vers la paume (19°) : doigts relâchés, pas en griffe
+      const qCurl = new THREE.Quaternion().setFromAxisAngle(curlAxis, (19 * Math.PI) / 180)
       rotatePoints(positions, qCurl, knuckle, (i) => {
         const dx = positions[i * 3] - knuckle.x
         const dy = positions[i * 3 + 1] - knuckle.y
@@ -371,7 +405,7 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
         if (!b || !t) continue
         const df = t.clone().sub(b).normalize()
         const q = new THREE.Quaternion().setFromUnitVectors(df, dir3)
-        const partial = new THREE.Quaternion().slerp(q, 0.16)
+        const partial = new THREE.Quaternion().slerp(q, 0.5)
         rotatePoints(positions, partial, b, (i) => {
           const dx = positions[i * 3] - b.x
           const dy = positions[i * 3 + 1] - b.y
@@ -395,17 +429,15 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
 
     // --- jambe : rotation unique de toute la chaîne autour de la hanche ---
     // Le mesh de base a la jambe quasi droite et le pied à plat : une seule
-    // rotation frontale suffit et évite les froissements au genou (qui
-    // aplatissaient les pieds). La rotation se fait dans le plan XY, donc la
-    // plante du pied reste à plat et pointe toujours vers l'avant.
-    const hip = nearestOf(`${side}-upper-leg`)
-    const ankleRest = nearestOf(`${side}-ankle`)
-    const knee0 = nearestOf(`${side}-knee`)
-    const toe0 = nearestOf(`${side}-foot-1`)
+    // rotation frontale suffit et évite les froissements au genou.
+    const hip = jointOf(`${side}-upper-leg`)
+    const ankleRest = jointOf(`${side}-ankle`)
+    const knee0 = jointOf(`${side}-knee`)
+    const toe0 = jointOf(`${side}-foot-1`)
     const otherSide = side === 'l' ? 'r' : 'l'
-    const otherHip = nearestOf(`${otherSide}-upper-leg`)
-    const otherKnee = nearestOf(`${otherSide}-knee`)
-    const otherAnkle = nearestOf(`${otherSide}-ankle`)
+    const otherHip = jointOf(`${otherSide}-upper-leg`)
+    const otherKnee = jointOf(`${otherSide}-knee`)
+    const otherAnkle = jointOf(`${otherSide}-ankle`)
     // os : la jambe d'un côté, le bassin + l'autre jambe de l'autre
     const legBones: Array<[THREE.Vector3, THREE.Vector3, number]> = [
       [hip, knee0, 0.055],
@@ -437,18 +469,62 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
       joints[key] = rotatePoint(joints[key], q3, hip)
     }
 
-    // --- pied : légère ouverture vers l'extérieur ---
-    const ankle = joints[`${side}-ankle`].clone()
-    if (joints[`${side}-foot-1`]) {
-      const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), (-s * FOOT_TOE_OUT * Math.PI) / 180)
-      // bande large : sinon les orteils pivotent à un angle différent de
-      // la plante et le pied se vrille
-      const wFoot = limbWeight(src, ankle, new THREE.Vector3(0, -1, 0), 0.105, 0.15, -0.004, 0.02)
-      rotatePoints(positions, qYaw, ankle, (i) => wFoot(i) * strength)
-      for (const key of [`${side}-foot-1`, `${side}-foot-2`]) {
-        if (!joints[key]) continue
-        joints[key] = rotatePoint(joints[key], qYaw, ankle)
+    // -----------------------------------------------------------------------
+    // PIED : bloc rigide, planté à plat, légèrement ouvert vers l'extérieur.
+    //
+    // Trois défauts ont été corrigés ici (le pied était « vrillé ») :
+    //
+    //  1. la rotation d'ouverture ne portait QUE sur le talon (la bande de
+    //     poids s'arrêtait à 10 cm de l'axe de la cheville) : les orteils
+    //     restaient dans l'orientation d'origine et le pied se tordait ;
+    //  2. la rotation d'ouverture était de signe inverse : le pied gauche
+    //     pointait vers l'intérieur du corps ;
+    //  3. la rotation de la jambe autour de la hanche fait ALSOUSSER la
+    //     plante du pied (le pied ne restait plus à plat) : il faut la
+    //     remettre à l'horizontale.
+    //
+    // On procède donc en deux temps : on mesure la plante APRÈS la rotation
+    // de la jambe, on la ramène à l'horizontale, puis on applique
+    // l'ouverture. Le pied est traité comme un bloc rigide : une seule
+    // rotation autour de la cheville, avec un fondu dans la zone de
+    // cheville pour ne pas casser la liaison avec le tibia.
+    // -----------------------------------------------------------------------
+    const ankle = joints[`${side}-ankle`]?.clone()
+    if (ankle) {
+      const toeJ = joints[`${side}-foot-1`]
+
+      // poids d'appartenance au pied : sous la cheville et à moins de ~14 cm
+      // de l'axe vertical de la cheville (hors tibia, hors autre pied).
+      const footWeight = (i: number): number => {
+        const px = positions[i * 3]
+        const py = positions[i * 3 + 1]
+        const pz = positions[i * 3 + 2]
+        const horiz = Math.hypot(px - ankle.x, pz - ankle.z)
+        const below = smoothstep(ankle.y + 0.075, ankle.y - 0.012, py)
+        const near = 1 - smoothstep(0.1, 0.16, horiz)
+        return below * near
       }
+
+      // normale de la plante : moyenne des faces tournées vers le bas
+      const sole = soleNormal(positions, baseIndices, footWeight)
+      if (sole.lengthSq() > 1e-8) {
+        // 1) remise à plat : rotation minimale entre la plante et (0,-1,0)
+        const down = new THREE.Vector3(0, -1, 0)
+        const qFlat = new THREE.Quaternion().setFromUnitVectors(sole.clone().normalize(), down)
+        // 2) ouverture vers l'extérieur (+X pour la jambe gauche)
+        const qYaw = new THREE.Quaternion().setFromAxisAngle(
+          new THREE.Vector3(0, 1, 0),
+          (s * FOOT_TOE_OUT * Math.PI) / 180,
+        )
+        // composition : d'abord la remise à plat, puis l'ouverture
+        const qFoot = qYaw.clone().multiply(qFlat)
+        rotatePoints(positions, qFoot, ankle, (i) => footWeight(i) * strength)
+        for (const key of [`${side}-foot-1`, `${side}-foot-2`]) {
+          if (!joints[key]) continue
+          joints[key] = rotatePoint(joints[key], qFoot, ankle)
+        }
+      }
+      void toeJ
     }
   }
 
@@ -456,13 +532,20 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
   // peau est partagée entre deux membres ; la déformation y comprime les
   // sommets et crée une fente sombre. On relaxe ces sommets uniquement
   // (2 itérations, relaxation faible : au-delà, le maillage se déchire).
-  if (strength > 0) {
+  //
+  // ATTENTION : la zone de transition (poids de peau entre 0 et 1) est large
+  // — elle englobe toute la face interne de la cuisse. Un lissage de
+  // Laplace y aplatit la cuisse en « plaque » avec un bord franc. On ne
+  // relaxe donc que la bande étroite où le partage est réellement ambigu.
+  const relaxOn =
+    typeof location === 'undefined' ? true : new URLSearchParams(location.search).get('relax') !== '0'
+  if (strength > 0 && relaxOn) {
     const { indices } = getBaseMesh()
     const n = positions.length / 3
     const isActive = new Uint8Array(n)
     let count = 0
     for (let i = 0; i < n; i++) {
-      if (transition[i] > 0.15) {
+      if (transition[i] > 0.35) {
         isActive[i] = 1
         count++
       }
@@ -498,7 +581,7 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
         }
         for (let i = 0; i < n; i++) {
           if (!cnt[i]) continue
-          const w = 0.35 * transition[i]
+          const w = 0.2 * transition[i]
           for (let k = 0; k < 3; k++) positions[i * 3 + k] += (acc[i * 3 + k] / cnt[i]) * w
         }
       }
@@ -536,6 +619,6 @@ export function getPosedBase(): PosedMesh {
   const normals = new Float32Array(geo.getAttribute('normal').array as ArrayLike<number>)
   geo.dispose()
 
-  cache = { positions, indices: base.indices, joints, normals }
+  cache = { positions, indices: base.indices, quads: base.quads, joints, normals }
   return cache
 }

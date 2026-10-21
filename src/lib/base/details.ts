@@ -52,6 +52,26 @@ interface Groove {
   mirror?: boolean
   /** face concernée : avant (défaut) ou arrière */
   face?: 'front' | 'back'
+  /** boîte d'englobante (normalisé), calculée à la construction */
+  bbox?: [number, number, number, number]
+}
+
+/** Boîte d'englobante d'une rainure (miroir => domaine en |x|). */
+function grooveBBox(g: Groove): [number, number, number, number] {
+  if (g.bbox) return g.bbox
+  let minX = Infinity
+  let maxX = -Infinity
+  let minY = Infinity
+  let maxY = -Infinity
+  for (const [x, y] of g.pts) {
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+    if (y < minY) minY = y
+    if (y > maxY) maxY = y
+  }
+  const pad = g.width * 2.6
+  g.bbox = [minX - pad, maxX + pad, minY - pad, maxY + pad]
+  return g.bbox
 }
 
 /** Rainure dans l'espace 3D (utile pour les membres, suivant l'os). */
@@ -60,6 +80,23 @@ interface Groove3D {
   width: number
   depth: number
   region: (i: number, ctx: AnatomyContext) => number
+  /** centre + rayon d'une sphère englobante (rejection rapide) */
+  center?: THREE.Vector3
+  radius?: number
+}
+
+/** Sphère englobante d'une rainure 3D. */
+function groove3DSphere(g: Groove3D): { center: THREE.Vector3; radius: number } {
+  if (g.center && g.radius !== undefined) return { center: g.center, radius: g.radius }
+  const c = new THREE.Vector3()
+  for (const p of g.pts) c.add(p)
+  c.multiplyScalar(1 / g.pts.length)
+  let r = 0
+  for (const p of g.pts) r = Math.max(r, p.distanceTo(c))
+  r += g.width * 2.6
+  g.center = c
+  g.radius = r
+  return { center: c, radius: r }
 }
 
 interface Bulge {
@@ -77,6 +114,21 @@ interface Bulge {
   midline?: number
   /** rotation de l'ellipse (radians) */
   rot?: number
+  /** boîte d'englobante (normalisé) */
+  bbox?: [number, number, number, number]
+}
+
+/** Boîte d'englobante d'un renflement. */
+function bulgeBBox(b: Bulge): [number, number, number, number] {
+  if (b.bbox) return b.bbox
+  const pad = 2.1
+  b.bbox = [
+    b.c[0] - b.r[0] * pad,
+    b.c[0] + b.r[0] * pad,
+    b.c[1] - b.r[1] * pad,
+    b.c[1] + b.r[1] * pad,
+  ]
+  return b.bbox
 }
 
 /** Distance à une polyligne + point le plus proche (pour le gradient). */
@@ -104,17 +156,28 @@ const closestOnPolyline = (x: number, y: number, pts: Array<[number, number]>) =
   return { d: Math.sqrt(best), bx, by }
 }
 
-/** Distance à une polyligne 3D. */
-const distToPolyline3D = (p: THREE.Vector3, pts: THREE.Vector3[]) => {
+/**
+ * Distance à une polyligne 3D (calcul scalaire, sans allocation).
+ * Les coordonnées sont en unités NORMALISÉES (hauteur du corps = 1) :
+ * c'est indispensable, les positions de travail étant en mètres.
+ */
+const distToPolyline3D = (px: number, py: number, pz: number, pts: THREE.Vector3[]) => {
   let best = Infinity
   for (let k = 0; k < pts.length - 1; k++) {
     const a = pts[k]
     const b = pts[k + 1]
-    const ab = b.clone().sub(a)
-    const len2 = ab.lengthSq()
-    let t = 0
-    if (len2 > 1e-12) t = Math.max(0, Math.min(1, p.clone().sub(a).dot(ab) / len2))
-    const d = p.distanceTo(a.clone().addScaledVector(ab, t))
+    const abx = b.x - a.x
+    const aby = b.y - a.y
+    const abz = b.z - a.z
+    const len2 = abx * abx + aby * aby + abz * abz
+    const t =
+      len2 > 1e-12
+        ? Math.max(0, Math.min(1, ((px - a.x) * abx + (py - a.y) * aby + (pz - a.z) * abz) / len2))
+        : 0
+    const dx = px - (a.x + abx * t)
+    const dy = py - (a.y + aby * t)
+    const dz = pz - (a.z + abz * t)
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz)
     if (d < best) best = d
   }
   return best
@@ -517,9 +580,16 @@ export function applyAnatomy(
 
     // --- rainures : déplacement le long de la normale ---
     let disp = 0
+    const ax = Math.abs(x)
     for (const g of grooves) {
       const gate = g.face === 'back' ? backGate : frontGate
       if (gate <= 0) continue
+      // rejection rapide par boîte d'englobante (indispensable : le maillage
+      // dense compte plus de 200 000 sommets, on ne peut pas tester chaque
+      // polyligne sur chaque sommet)
+      const bb = grooveBBox(g)
+      const testX = g.mirror ? ax : x
+      if (testX < bb[0] || testX > bb[1] || y < bb[2] || y > bb[3]) continue
       const region = g.region(i, ctx)
       if (region <= 0.02) continue
       const w = g.width
@@ -546,10 +616,17 @@ export function applyAnatomy(
     }
 
     // --- rainures 3D (membres) ---
+    // Les polylignes sont en unités normalisées : on compare dans ce repère.
+    const zn = positions[i * 3 + 2] / H
     for (const g of grooves3D) {
+      const sph = groove3DSphere(g)
+      const dx3 = x - sph.center.x
+      const dy3 = y - sph.center.y
+      const dz3 = zn - sph.center.z
+      if (dx3 * dx3 + dy3 * dy3 + dz3 * dz3 > sph.radius * sph.radius) continue
       const region = g.region(i, ctx)
       if (region <= 0.02) continue
-      const d = distToPolyline3D(tmpVec.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]), g.pts)
+      const d = distToPolyline3D(x, y, zn, g.pts)
       if (d > g.width * 2.4) continue
       const e = Math.exp(-((d / g.width) ** 2))
       const k = -g.depth * e * region * H * frontGate
@@ -560,6 +637,9 @@ export function applyAnatomy(
 
     // --- renflements ---
     for (const b of bl) {
+      const bb = bulgeBBox(b)
+      const testX = b.mirror ? ax : x
+      if (testX < bb[0] || testX > bb[1] || y < bb[2] || y > bb[3]) continue
       const region = b.region(i, ctx)
       if (region <= 0.02) continue
       let dx = x - b.c[0]
