@@ -60,6 +60,163 @@ def read_obj(path):
     return verts, faces
 
 
+# ---------------------------------------------------------------------------
+# Lecture glTF / GLB
+# ---------------------------------------------------------------------------
+
+COMP = {5120: ("b", 1), 5121: ("B", 1), 5122: ("h", 2), 5123: ("H", 2), 5125: ("I", 4), 5126: ("f", 4)}
+NCOMP = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16}
+
+
+def read_gltf(path):
+    """Lit un .glb ou un .gltf : renvoie (positions, indices, joints, noeuds)."""
+    data = path.read_bytes()
+    if data[:4] == b"glTF":
+        magic, version, total = struct.unpack("<III", data[:12])
+        off = 12
+        js = None
+        blob = b""
+        while off < len(data):
+            clen, ctype = struct.unpack("<II", data[off : off + 8])
+            chunk = data[off + 8 : off + 8 + clen]
+            if ctype == 0x4E4F534A:
+                js = json.loads(chunk)
+            else:
+                blob = chunk
+            off += 8 + clen
+    else:
+        js = json.loads(data)
+        ref = js["buffers"][0].get("uri", "")
+        binp = path.parent / ref
+        blob = binp.read_bytes() if binp.exists() else b""
+
+    buffers = []
+    for i, b in enumerate(js.get("buffers", [])):
+        if i == 0:
+            buffers.append(blob)
+        else:
+            ref = b.get("uri", "")
+            p = path.parent / ref
+            buffers.append(p.read_bytes() if p.exists() else b"")
+
+    def accessor(i):
+        acc = js["accessors"][i]
+        bv = js["bufferViews"][acc["bufferView"]]
+        buf = buffers[bv.get("buffer", 0)]
+        off = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
+        fmt, size = COMP[acc["componentType"]]
+        n = NCOMP[acc["type"]]
+        count = acc["count"]
+        stride = bv.get("byteStride") or size * n
+        out = []
+        for k in range(count):
+            base = off + k * stride
+            out.append(struct.unpack_from("<%d%s" % (n, fmt), buf, base))
+        return out
+
+    # --- maillage principal : le plus gros (celui du corps) ---
+    best = None
+    for m in js.get("meshes", []):
+        prim = m["primitives"][0]
+        a = js["accessors"][prim["attributes"]["POSITION"]]
+        if best is None or a["count"] > best[1]:
+            best = (m, a["count"])
+    m = best[0]
+    prim = m["primitives"][0]
+    positions = [tuple(p) for p in accessor(prim["attributes"]["POSITION"])]
+    if "indices" in prim:
+        indices = [i[0] for i in accessor(prim["indices"])]
+    else:
+        indices = list(range(len(positions)))
+
+    # --- squelette : repères en position monde (matrices d'inverse de liaison) ---
+    joints = {}
+    skins = js.get("skins", [])
+    if skins:
+        skin = skins[0]
+        joints_node = skin.get("joints", [])
+        ibm = skin.get("inverseBindMatrices")
+        for k, ni in enumerate(joints_node):
+            node = js["nodes"][ni]
+            name = node.get("name", f"joint-{k}")
+            if ibm is not None:
+                mtx = accessor(ibm)[k]
+                tx, ty, tz = mtx[12], mtx[13], mtx[14]
+            else:
+                t = node.get("translation", [0, 0, 0])
+                tx, ty, tz = t
+            joints[name] = (tx, ty, tz)
+    else:
+        # pas de skin : les nœuds nommés servent de repères (format .glb de
+        #prep-glb.py, où chaque repère anatomique est un nœud)
+        for ni, node in enumerate(js.get("nodes", [])):
+            name = node.get("name")
+            if not name:
+                continue
+            t = node.get("translation", [0, 0, 0])
+            joints[name] = (t[0], t[1], t[2])
+    return positions, indices, joints
+
+
+# ---------------------------------------------------------------------------
+# Correspondance des noms d'os -> nomenclature du projet
+# ---------------------------------------------------------------------------
+
+# mots-clés -> repère du projet
+BONE_PATTERNS = [
+    (["hips", "pelvis", "root", "coccyx"], "pelvis"),
+    (["spine4", "spine04", "spine_4", "lowerspine", "abdomen", "waist"], "spine-4"),
+    (["spine3", "spine03", "spine_3", "chest", "upperchest", "thorax", "ribcage"], "spine-3"),
+    (["spine2", "spine02", "spine_2", "spine"], "spine-2"),
+    (["spine1", "spine01", "spine_1"], "spine-1"),
+    (["neck"], "neck"),
+    (["head"], "head"),
+    (["topofhead", "headend", "headtop"], "head-2"),
+    (["shoulder"], "shoulder"),
+    (["clavicle", "collar"], "clavicle"),
+    (["elbow"], "elbow"),
+    (["wrist", "hand"], "hand"),
+    (["upleg", "upperleg", "thigh", "hip", "leg"], "upper-leg"),
+    (["knee", "lowerleg", "calf", "shin"], "knee"),
+    (["ball", "toebase", "toe", "toeend"], "foot-1"),
+    (["ankle"], "ankle"),
+    (["foot"], "foot-1"),
+]
+
+
+def norm_name(n: str) -> str:
+    n = n.lower()
+    for pre in ("mixamorig:", "def-", "bip01", "bip02", "bip", "joint", "bone", "armature", "b_"):
+        n = n.replace(pre, "")
+    n = n.replace("_", "").replace("-", "").replace(".", "").replace(" ", "")
+    return n
+
+
+def map_bones(joints):
+    """Associe les os du modèle aux repères du projet (l-/r-)."""
+    out = {}
+    for name, p in joints.items():
+        nn = norm_name(name)
+        side = None
+        if any(s in nn for s in ("left", "lft", "_l", "l_")) or nn.startswith("l"):
+            side = "l"
+        elif any(s in nn for s in ("right", "rgt", "_r", "r_")) or nn.startswith("r"):
+            side = "r"
+        for keys, rep in BONE_PATTERNS:
+            for k in keys:
+                if k in nn:
+                    if side:
+                        out.setdefault(f"{side}-{rep}", p)
+                    else:
+                        out.setdefault(rep, p)
+                    break
+            else:
+                continue
+            break
+    return out
+
+
+
 def weld(verts, faces, eps=1e-6):
     """Fusionne les sommets de même position (les .obj ont souvent des
     doublons : normales et UVs séparées)."""
@@ -358,8 +515,14 @@ def main():
         sys.exit(1)
 
     print(f"lecture {path.name} …")
-    verts, faces = read_obj(path)
-    print(f"  {len(verts)} sommets, {len(faces)} faces")
+    bone_joints = {}
+    if path.suffix.lower() in (".glb", ".gltf"):
+        verts, idxs, bone_joints = read_gltf(path)
+        faces = [idxs[i : i + 3] for i in range(0, len(idxs), 3)]
+        print(f"  {len(verts)} sommets, {len(idxs)} indices, {len(bone_joints)} os")
+    else:
+        verts, faces = read_obj(path)
+        print(f"  {len(verts)} sommets, {len(faces)} faces")
     verts, faces = weld(verts, faces)
     print(f"  après fusion des doublons : {len(verts)} sommets, {len(faces)} faces")
 
@@ -383,16 +546,30 @@ def main():
         for k in range(1, len(f) - 1):
             indices += [f[0], f[k], f[k + 1]]
 
-    joints = silhouette_joints(verts, faces)
-    # renommage en paires gauche/droite
-    final = {}
-    for name in list(joints.keys()):
-        if name.endswith("@mirror"):
-            continue
-        x, y, z = joints[name]
-        final[name] = (x, y, z)
-        final["l-" + name] = (abs(x), y, z)
-        final["r-" + name] = (-abs(x), y, z)
+    # --- repères anatomiques ---
+    if bone_joints:
+        # modèle riggé : les os donnent les repères (bien plus fiable que
+        # la silhouette). On les normalise comme les sommets.
+        norm_bones = {
+            n: ((p[0] - cx) / h, (p[1] - y0) / h, (p[2]) / h) for n, p in bone_joints.items()
+        }
+        final = map_bones(norm_bones)
+        print(f"  repères issus du squelette : {len(final)}")
+        if len(final) < 6:
+            print("  (squelette inexploitable → repli sur la silhouette)")
+            final = {}
+    else:
+        final = {}
+
+    if not final:
+        joints = silhouette_joints(verts, faces)
+        for name in list(joints.keys()):
+            if name.endswith("@mirror"):
+                continue
+            x, y, z = joints[name]
+            final[name] = (x, y, z)
+            final["l-" + name] = (abs(x), y, z)
+            final["r-" + name] = (-abs(x), y, z)
 
     out_path = OUT
     if args.out:
@@ -400,11 +577,15 @@ def main():
     elif not args.force:
         out_path = OUT_DIR / ("body-" + path.stem.lower().replace(" ", "-") + ".glb")
     size = write_glb(verts, indices, final, out_path)
-    print(f"écrit {out_path.relative_to(ROOT) if out_path.is_absolute() else out_path} : {size/1024:.0f} Ko")
+    try:
+        shown = out_path.relative_to(ROOT)
+    except ValueError:
+        shown = out_path
+    print(f"écrit {shown} : {size/1024:.0f} Ko")
     print(f"  {len(verts)} sommets, {len(indices)//3} triangles, {len(final)} repères")
     for k in sorted(final):
-        if k.startswith("l-"):
-            print(f"   {k:16s} {tuple(round(v,3) for v in final[k])}")
+        if k.startswith("l-") or "-" not in k:
+            print(f"   {k:16s} {tuple(round(v, 3) for v in final[k])}")
 
 
 if __name__ == "__main__":

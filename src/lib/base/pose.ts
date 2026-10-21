@@ -404,7 +404,9 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
         if (!b || !t) continue
         const df = t.clone().sub(b).normalize()
         const q = new THREE.Quaternion().setFromUnitVectors(df, dir3)
-        const partial = new THREE.Quaternion().slerp(q, 0.5)
+        // resserrement modéré : une main détendue garde ses doigts
+        // légèrement écartés (comme sur la sculpture de référence)
+        const partial = new THREE.Quaternion().slerp(q, 0.28)
         rotatePoints(positions, partial, b, (i) => {
           const dx = positions[i * 3] - b.x
           const dy = positions[i * 3 + 1] - b.y

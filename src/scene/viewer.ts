@@ -137,7 +137,7 @@ export class Viewer {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.renderer.setSize(container.clientWidth || 800, container.clientHeight || 600)
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 1.0
+    this.renderer.toneMappingExposure = 0.92
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = THREE.PCFShadowMap
@@ -145,7 +145,7 @@ export class Viewer {
 
     this.scene.background = this.gradientBackground()
     this.scene.environment = studioEnvironment(this.renderer)
-    this.scene.environmentIntensity = 0.72
+    this.scene.environmentIntensity = 0.5
     // debug : ?shadow=0 désactive les ombres portées
     if (typeof location !== 'undefined' && new URLSearchParams(location.search).get('shadow') === '0') {
       this.renderer.shadowMap.enabled = false
@@ -169,22 +169,22 @@ export class Viewer {
 
     // --- éclairage studio ---
     // Hémisphérique très doux : évite les noirs bouchés sous le socle.
-    this.scene.add(new THREE.HemisphereLight(0xdfe6f0, 0x4a4844, 0.16))
+    this.scene.add(new THREE.HemisphereLight(0xdfe6f0, 0x4a4844, 0.09))
 
     // Clé : modelé principal, en haut à droite et devant. Elle ne projette
     // PAS d'ombre : sur la sculpture de référence, l'ombre au sol est un
-    // simple_contact, pas une longue ombre portée.
-    const key = new THREE.DirectionalLight(0xfff4e6, 2.1)
+    // simple contact, pas une longue ombre portée.
+    const key = new THREE.DirectionalLight(0xfff4e6, 2.9)
     key.position.set(2.9, 3.1, 2.3)
     this.scene.add(key)
 
     // Remplissage froid, large, à gauche.
-    const fill = new THREE.DirectionalLight(0xdae4ff, 0.5)
+    const fill = new THREE.DirectionalLight(0xdae4ff, 0.32)
     fill.position.set(-3.4, 1.5, 2.2)
     this.scene.add(fill)
 
     // Contre-jour : détache la silhouette du fond.
-    const rim = new THREE.DirectionalLight(0xffffff, 1.15)
+    const rim = new THREE.DirectionalLight(0xffffff, 1.35)
     rim.position.set(-1.7, 2.9, -3.4)
     this.scene.add(rim)
 
@@ -269,12 +269,12 @@ export class Viewer {
     // jambes, sous les pectoraux) et qui donne le relief « sculpture ».
     this.gtao = new GTAOPass(this.scene, this.camera, size.x, size.y)
     this.gtao.output = GTAOPass.OUTPUT.Default
-    this.gtao.blendIntensity = 1.0
+    this.gtao.blendIntensity = 1.15
     this.gtao.updateGtaoMaterial({
-      radius: 0.16,
+      radius: 0.2,
       distanceExponent: 1.0,
-      thickness: 0.35,
-      scale: 1.0,
+      thickness: 0.4,
+      scale: 1.1,
       samples: 16,
       distanceFallOff: 1.0,
       screenSpaceRadius: false,

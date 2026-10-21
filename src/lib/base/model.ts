@@ -87,13 +87,15 @@ function extract(gltf: { scene: THREE.Group; userData: Record<string, unknown> }
 /**
  * Charge le modèle depuis une URL. Renvoie la même instance si le modèle
  * est déjà chargé (le morphing et la pose l'utilisent de façon synchrone).
+ *
+ * `?model=autre.glb` permet de tester un autre modèle sans recompiler.
  */
 export function loadBodyModel(url = 'body.glb'): Promise<LoadedBody> {
   if (loaded) return Promise.resolve(loaded)
   if (pending) return pending
   pending = fetch(url)
     .then((r) => {
-      if (!r.ok) throw new Error(`body.glb : HTTP ${r.status}`)
+      if (!r.ok) throw new Error(`${url} : HTTP ${r.status}`)
       return r.arrayBuffer()
     })
     .then((buf) => parseBodyModel(buf))

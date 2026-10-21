@@ -134,10 +134,16 @@ export function findPubis(positions: Float32Array, H: number): { y: number; z: n
 /**
  * Construit le maillage génital (unique, le même pour tous les corps).
  *
- * Anatomie sculptée simple, dans l'esprit de la statue : verge courte et
- * tombante le long du scrotum, scrotum en masse unique avec un léger sillon
- * médian. Tout est posé sur la surface pubienne réelle (donc le modèle
- * suit la morphologie : graisse, ventre, cuisses).
+ * Anatomie sculptée dans l'esprit de la statue de plâtre :
+ *   - le SCROTUM est la masse principale : un gros ovoïde bas, slightly
+ *     en arrière, fendu en deux lobes par un sillon médian ;
+ *   - la VERGE pend devant le scrotum, légèrement galbée, avec un gland
+ *     arrondi un peu plus large que la hampe ;
+ *   - une racine ellipsoïdale raccorde le tout à la surface pubienne,
+ *     pour qu'il n'y ait pas de « tuyau » planté dans le corps.
+ *
+ * Tout est posé sur la surface pubienne réelle (donc le modèle suit la
+ * morphologie : graisse, ventre, cuisses).
  *
  * @param pubis   position de la surface pubienne (normalisée)
  * @param scale   facteur d'échelle (plus grand sur un corps plus grand)
@@ -149,39 +155,42 @@ export function buildGenitals(pubis: { y: number; z: number }, scale = 1): THREE
 
   {
     // --- verge : du pubis vers le bas, légèrement en avant, gland en bas ---
-    const base = new THREE.Vector3(0, y - 0.004, z + 0.001)
-    const dir = new THREE.Vector3(0, -0.94, 0.34).normalize()
-    const len = 0.05 * scale
-    const n = 14
+    // La base est légèrement EN AVANT de la surface pubienne : elle doit
+    // sembler émerger du corps, pas y être plantée.
+    const base = new THREE.Vector3(0, y - 0.009, z - 0.005)
+    const len = 0.031 * scale
+    const n = 16
     const path: THREE.Vector3[] = []
     const radii: number[] = []
     for (let i = 0; i <= n; i++) {
       const t = i / n
-      const p = base.clone().addScaledVector(dir, len * t)
-      // léger galbe vers l'avant (la verge pend entre les cuisses)
-      p.z += Math.sin(t * Math.PI) * 0.005 * scale
+      // la verge pend : elle part vers l'avant puis revient vers l'arrière
+      const p = base.clone()
+      p.y -= len * t
+      p.z += Math.sin(t * 1.1) * 0.0055 * scale
       path.push(p)
-      // profil : large à la base, rétréci, gland un peu renflé
+      // profil : racine large, hampe fine, gland arrondi un peu plus large
       let r: number
-      if (t < 0.1) r = 0.0092 * scale * (0.78 + (t / 0.1) * 0.22)
-      else if (t > 0.84) r = (0.0082 + (t - 0.84) / 0.16 * 0.0022) * scale
-      else r = (0.0092 - 0.001 * ((t - 0.1) / 0.74)) * scale
+      if (t < 0.16) r = 0.0086 * scale * (0.72 + (t / 0.16) * 0.28)
+      else if (t < 0.74) r = (0.0086 - 0.0018 * ((t - 0.16) / 0.58)) * scale
+      else if (t < 0.88) r = (0.0070 + 0.0014 * ((t - 0.74) / 0.14)) * scale
+      else r = (0.0084 - 0.0032 * ((t - 0.88) / 0.12)) * scale
       radii.push(r)
     }
-    addSweptTube(mb, path, radii, 22)
+    addSweptTube(mb, path, radii, 24)
 
-    // --- scrotum : deux lobes joints, séparés par un sillon médian ---
+    // --- scrotum : deux lobes joints sous la verge, sillon médian entre eux ---
     for (const sx of [-1, 1]) {
-      const c = new THREE.Vector3(sx * 0.0068 * scale, y - 0.0225 * scale, z - 0.0125 * scale)
-      addEllipsoid(mb, c, new THREE.Vector3(0.0078 * scale, 0.0125 * scale, 0.0102 * scale), 20, 14)
+      const c = new THREE.Vector3(sx * 0.0072 * scale, y - 0.0235 * scale, z - 0.0145 * scale)
+      addEllipsoid(mb, c, new THREE.Vector3(0.0084 * scale, 0.0150 * scale, 0.0116 * scale), 22, 16)
     }
-    // raccord scrotum / verge
+    // racine : raccorde la verge à la surface pubienne (pas de « tuyau »)
     addEllipsoid(
       mb,
-      new THREE.Vector3(0, y - 0.0125 * scale, z - 0.006 * scale),
-      new THREE.Vector3(0.0092 * scale, 0.0105 * scale, 0.0095 * scale),
-      20,
-      12,
+      new THREE.Vector3(0, y - 0.0105 * scale, z - 0.0065 * scale),
+      new THREE.Vector3(0.0104 * scale, 0.0112 * scale, 0.0104 * scale),
+      22,
+      14,
     )
   }
 

@@ -41,18 +41,18 @@ export interface BodyParams {
  */
 export const DEFAULT_PARAMS: BodyParams = {
   height: 175,
-  fat: 12,
-  belly: 16,
-  neck: 60,
-  shoulders: 78,
-  lats: 76,
-  pecs: 80,
-  abs: 74,
-  glutes: 60,
-  thighs: 72,
-  calves: 62,
-  arms: 76,
-  forearms: 62,
+  fat: 11,
+  belly: 14,
+  neck: 78,
+  shoulders: 92,
+  lats: 90,
+  pecs: 88,
+  abs: 86,
+  glutes: 76,
+  thighs: 86,
+  calves: 78,
+  arms: 88,
+  forearms: 76,
 }
 
 export const PRESETS: Record<string, Omit<BodyParams, 'height'>> = {
@@ -104,15 +104,15 @@ export function getLayerWeights(p: BodyParams): LayerWeights {
     muscleMin: clamp(1 - 2 * m01, 0, 1),
     weightMax: clamp(2 * w01 - 1, 0, 1),
     weightMin: clamp(1 - 2 * w01, 0, 1),
-    vshape: local(p.lats, 0.7),
+    vshape: local(p.lats, 0.85),
     pectoral: local(p.pecs, 1.0),
     dorsi: local(p.lats, 0.7),
-    shoulderDist: local(p.shoulders, 1.0),
+    shoulderDist: local(p.shoulders, 1.2),
     upperarm: local(p.arms, 1.0),
     thigh: local(p.thighs, 1.0),
     calf: local(p.calves, 1.0),
-    neck: local(p.neck, 1.0),
-    neckWide: local(p.neck, 0.8),
+    neck: local(p.neck, 1.2),
+    neckWide: local(p.neck, 1.0),
     waistIn: local(p.lats, 0.7),
     stomachTone: local(p.abs, 0.7),
     pelvisTone: local(p.abs, 0.35),
@@ -630,16 +630,16 @@ export function buildBodyGeometry(p: BodyParams): BodyBuild {
 
   const dFat = fatD * 0.011
   const dBelly = bellyD * 0.075
-  const dGlute = glutD * 0.02
-  const dPec = pecsD * 0.012
-  const dLat = latsD * 0.024
-  const dAbs = absD * 0.006
-  const dTrap = neckD * 0.01
-  const dDelt = shD * 0.013
-  const dArm = armD * 0.012
-  const dFore = foreD * 0.008
-  const dThigh = thighD * 0.012
-  const dCalf = calfD * 0.011
+  const dGlute = glutD * 0.014
+  const dPec = pecsD * 0.016
+  const dLat = latsD * 0.03
+  const dAbs = absD * 0.007
+  const dTrap = neckD * 0.013
+  const dDelt = shD * 0.017
+  const dArm = armD * 0.016
+  const dFore = foreD * 0.011
+  const dThigh = thighD * 0.014
+  const dCalf = calfD * 0.013
 
   const out = new Float32Array(src.length)
   const muscleOn = debugFlag('muscle')

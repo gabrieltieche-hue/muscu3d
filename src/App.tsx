@@ -100,8 +100,10 @@ export default function App() {
   useEffect(() => {
     // Le corps vient d'un fichier modèle 3D (public/body.glb) : on le charge
     // d'abord, le morphing s'appuie ensuite dessus.
+    // `?model=xxx.glb` permet d'essayer un autre modèle à la volée.
     let alive = true
-    loadBodyModel()
+    const url = new URLSearchParams(location.search).get('model') || 'body.glb'
+    loadBodyModel(url)
       .then(() => {
         if (alive) setReady(true)
       })
