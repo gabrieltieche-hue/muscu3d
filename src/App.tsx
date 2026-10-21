@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Viewer } from './scene/viewer'
+import { loadBodyModel } from './lib/base/model'
 import {
   buildBody,
   DEFAULT_PARAMS,
@@ -91,8 +92,27 @@ export default function App() {
   const [rotate, setRotate] = useState(false)
   const [wire, setWire] = useState(() => new URLSearchParams(location.search).get('wire') === '1')
   const [metrics, setMetrics] = useState<BodyMetrics | null>(null)
+  const [ready, setReady] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const params = mode === 'current' ? current : target
+
+  useEffect(() => {
+    // Le corps vient d'un fichier modèle 3D (public/body.glb) : on le charge
+    // d'abord, le morphing s'appuie ensuite dessus.
+    let alive = true
+    loadBodyModel()
+      .then(() => {
+        if (alive) setReady(true)
+      })
+      .catch((e) => {
+        console.error(e)
+        if (alive) setError(String(e?.message ?? e))
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   useEffect(() => {
     const v = new Viewer(mountRef.current!)
@@ -118,13 +138,13 @@ export default function App() {
 
   useEffect(() => {
     const v = viewerRef.current
-    if (!v) return
+    if (!v || !ready) return
     const { group, metrics: m } = buildBody(params)
     v.setBody(group)
     v.setWireframeVisible(wire)
     v.setAccent(mode === 'current' ? 0x38bdf8 : 0xa3e635)
     setMetrics(m)
-  }, [params, mode, wire])
+  }, [params, mode, wire, ready])
 
   useEffect(() => {
     // Surcharge des paramètres via l'URL (debug) : ?fat=20&lats=30&arms=80
@@ -235,6 +255,8 @@ export default function App() {
           </label>
         </div>
         <div className="hint">glisse pour tourner · pince pour zoomer</div>
+        {!ready && !error && <div className="hint loading">chargement du modèle 3D…</div>}
+        {error && <div className="hint loading">modèle indisponible : {error}</div>}
       </div>
 
       <aside className="panel">

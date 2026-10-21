@@ -4,6 +4,9 @@
  */
 import { buildBodyGeometry, DEFAULT_PARAMS, PRESETS, type BodyParams } from '../src/lib/body'
 
+import { loadModel } from './dev/load-model'
+await loadModel()
+
 const neutral: BodyParams = { ...DEFAULT_PARAMS, fat: 12, belly: 25, neck: 50, shoulders: 50, lats: 50, pecs: 50, abs: 50, glutes: 50, thighs: 50, calves: 50, arms: 50, forearms: 50 }
 
 const cases: Array<[string, BodyParams]> = [

@@ -30,18 +30,20 @@
 
 /** Un niveau de subdivision précalculé (topologie seule). */
 interface LevelPlan {
-  /** faces quads d'entrée de ce niveau */
-  inQuads: Uint32Array
+  /** faces d'entrée, à plat : les indices de tous les polygones */
+  inFaces: Uint32Array
+  /** nombre de sommets par face (3 pour un triangle, 4 pour un quad) */
+  faceSizes: Uint8Array
   /** nombre de sommets d'entrée */
   nV: number
-  /** nombre de faces quads d'entrée */
+  /** nombre de faces d'entrée */
   nF: number
   /** nombre d'arêtes d'entrée */
   nE: number
   /** extrémités des arêtes (a < b) */
   edgeA: Int32Array
   edgeB: Int32Array
-  /** pour chaque face, les 4 indices d'arête (ab, bc, cd, da) */
+  /** pour chaque face, les indices d'arête (un par côté) */
   faceEdges: Int32Array
   /** valence de chaque sommet (= nombre de faces incidentes) */
   valence: Uint16Array
@@ -51,8 +53,10 @@ interface LevelPlan {
   /** CSR : arêtes incidentes de chaque sommet */
   vEdgeOffset: Int32Array
   vEdgeIdx: Int32Array
-  /** faces quads de sortie */
-  outQuads: Uint32Array
+  /** faces de sortie (à plat) */
+  outFaces: Uint32Array
+  /** nombre de sommets par face de sortie */
+  outSizes: Uint8Array
   /** indices triangulés de sortie */
   outIndices: Uint32Array
 }
@@ -116,24 +120,24 @@ class EdgeTable {
 }
 
 /** Construit le plan topologique d'un niveau de subdivision. */
-function buildLevelPlan(inQuads: Uint32Array, nV: number): LevelPlan {
-  const nF = inQuads.length / 4
+function buildLevelPlan(inFaces: Uint32Array, faceSizes: Uint8Array, nV: number): LevelPlan {
+  const nF = faceSizes.length
+  // début de chaque face dans le tableau à plat
+  const faceStart = new Uint32Array(nF + 1)
+  for (let f = 0; f < nF; f++) faceStart[f + 1] = faceStart[f] + faceSizes[f]
 
   // --- arêtes ---
-  const table = new EdgeTable(nF * 2)
-  const edgeA = new Int32Array(nF * 2)
-  const edgeB = new Int32Array(nF * 2)
+  const table = new EdgeTable(nF * 3)
+  const edgeA = new Int32Array(nF * 3)
+  const edgeB = new Int32Array(nF * 3)
   let nE = 0
-  const faceEdges = new Int32Array(nF * 4)
+  const faceEdges = new Int32Array(faceStart[nF])
   for (let f = 0; f < nF; f++) {
-    const o = f * 4
-    const c0 = inQuads[o]
-    const c1 = inQuads[o + 1]
-    const c2 = inQuads[o + 2]
-    const c3 = inQuads[o + 3]
-    for (let k = 0; k < 4; k++) {
-      const a = k === 0 ? c0 : k === 1 ? c1 : k === 2 ? c2 : c3
-      const b = k === 0 ? c1 : k === 1 ? c2 : k === 2 ? c3 : c0
+    const base = faceStart[f]
+    const sz = faceSizes[f]
+    for (let k = 0; k < sz; k++) {
+      const a = inFaces[base + k]
+      const b = inFaces[base + ((k + 1) % sz)]
       const lo = a < b ? a : b
       const hi = a < b ? b : a
       let e = table.get(lo, hi)
@@ -143,27 +147,24 @@ function buildLevelPlan(inQuads: Uint32Array, nV: number): LevelPlan {
         edgeB[e] = hi
         table.ensure(lo, hi, e)
       }
-      faceEdges[o + k] = e
+      faceEdges[base + k] = e
     }
   }
 
   // --- incidences (CSR) ---
   const valence = new Uint16Array(nV)
   for (let f = 0; f < nF; f++) {
-    const o = f * 4
-    valence[inQuads[o]]++
-    valence[inQuads[o + 1]]++
-    valence[inQuads[o + 2]]++
-    valence[inQuads[o + 3]]++
+    const base = faceStart[f]
+    for (let k = 0; k < faceSizes[f]; k++) valence[inFaces[base + k]]++
   }
   const vFaceOffset = new Int32Array(nV + 1)
   for (let v = 0; v < nV; v++) vFaceOffset[v + 1] = vFaceOffset[v] + valence[v]
   const vFaceIdx = new Int32Array(vFaceOffset[nV])
   const cursor = vFaceOffset.slice(0, nV)
   for (let f = 0; f < nF; f++) {
-    const o = f * 4
-    for (let k = 0; k < 4; k++) {
-      const v = inQuads[o + k]
+    const base = faceStart[f]
+    for (let k = 0; k < faceSizes[f]; k++) {
+      const v = inFaces[base + k]
       vFaceIdx[cursor[v]++] = f
     }
   }
@@ -180,54 +181,54 @@ function buildLevelPlan(inQuads: Uint32Array, nV: number): LevelPlan {
     vEdgeIdx[cursor2[edgeB[e]]++] = e
   }
 
-  // --- faces de sortie ---
-  const outQuads = new Uint32Array(nF * 16)
+  // --- faces de sortie : pour chaque polygone, un sous-polygone par côté ---
+  const outSizes = new Uint8Array(nF * 4)
+  let outCount = 0
   for (let f = 0; f < nF; f++) {
-    const o = f * 4
-    const v0 = inQuads[o]
-    const v1 = inQuads[o + 1]
-    const v2 = inQuads[o + 2]
-    const v3 = inQuads[o + 3]
-    const e0 = nV + faceEdges[o]
-    const e1 = nV + faceEdges[o + 1]
-    const e2 = nV + faceEdges[o + 2]
-    const e3 = nV + faceEdges[o + 3]
-    const fp = nV + nE + f
-    const q = f * 16
-    outQuads[q] = v0
-    outQuads[q + 1] = e0
-    outQuads[q + 2] = fp
-    outQuads[q + 3] = e3
-    outQuads[q + 4] = e0
-    outQuads[q + 5] = v1
-    outQuads[q + 6] = e1
-    outQuads[q + 7] = fp
-    outQuads[q + 8] = fp
-    outQuads[q + 9] = e1
-    outQuads[q + 10] = v2
-    outQuads[q + 11] = e2
-    outQuads[q + 12] = e3
-    outQuads[q + 13] = fp
-    outQuads[q + 14] = e2
-    outQuads[q + 15] = v3
+    const sz = faceSizes[f]
+    for (let k = 0; k < sz; k++) outSizes[outCount++] = sz === 4 ? 4 : 3
   }
-  const outIndices = new Uint32Array((nF * 4) * 6)
+  const outFaces = new Uint32Array(outCount * 4)
+  const outStart = new Uint32Array(outCount + 1)
+  for (let f = 0; f < outCount; f++) outStart[f + 1] = outStart[f] + outSizes[f]
+  for (let f = 0; f < nF; f++) {
+    const base = faceStart[f]
+    const sz = faceSizes[f]
+    const fp = nV + nE + f
+    for (let k = 0; k < sz; k++) {
+      const outF = f * 4 + k
+      const o = outStart[outF]
+      const v = inFaces[base + k]
+      const eNext = nV + faceEdges[base + k]
+      const ePrev = nV + faceEdges[base + ((k + sz - 1) % sz)]
+      if (sz === 4) {
+        outFaces[o] = v
+        outFaces[o + 1] = eNext
+        outFaces[o + 2] = fp
+        outFaces[o + 3] = ePrev
+      } else {
+        outFaces[o] = v
+        outFaces[o + 1] = eNext
+        outFaces[o + 2] = fp
+      }
+    }
+  }
+  // indices triangulés
+  const outIndices = new Uint32Array(outCount * 6)
   let k = 0
-  for (let q = 0; q < outQuads.length; q += 4) {
-    const a = outQuads[q]
-    const b = outQuads[q + 1]
-    const c = outQuads[q + 2]
-    const d = outQuads[q + 3]
-    outIndices[k++] = a
-    outIndices[k++] = b
-    outIndices[k++] = c
-    outIndices[k++] = a
-    outIndices[k++] = c
-    outIndices[k++] = d
+  for (let f = 0; f < outCount; f++) {
+    const o = outStart[f]
+    const sz = outSizes[f]
+    for (let i = 1; i < sz - 1; i++) {
+      outIndices[k++] = outFaces[o]
+      outIndices[k++] = outFaces[o + i]
+      outIndices[k++] = outFaces[o + i + 1]
+    }
   }
 
   return {
-    inQuads,
+    inFaces,
+    faceSizes,
     nV,
     nF,
     nE,
@@ -239,34 +240,44 @@ function buildLevelPlan(inQuads: Uint32Array, nV: number): LevelPlan {
     vFaceIdx,
     vEdgeOffset,
     vEdgeIdx,
-    outQuads,
+    outFaces,
+    outSizes,
     outIndices,
   }
 }
 
 /** Applique un niveau de subdivision à un jeu de positions. */
 function applyLevel(plan: LevelPlan, positions: Float32Array): Float32Array {
-  const { nV, nF, nE, inQuads } = plan
+  const { nV, nF, nE } = plan
+  const faceStart = new Uint32Array(nF + 1)
+  for (let f = 0; f < nF; f++) faceStart[f + 1] = faceStart[f] + plan.faceSizes[f]
 
   // points de face
   const facePos = new Float32Array(nF * 3)
   for (let f = 0; f < nF; f++) {
-    const o = f * 4
-    const i0 = inQuads[o] * 3
-    const i1 = inQuads[o + 1] * 3
-    const i2 = inQuads[o + 2] * 3
-    const i3 = inQuads[o + 3] * 3
-    facePos[f * 3] = (positions[i0] + positions[i1] + positions[i2] + positions[i3]) * 0.25
-    facePos[f * 3 + 1] = (positions[i0 + 1] + positions[i1 + 1] + positions[i2 + 1] + positions[i3 + 1]) * 0.25
-    facePos[f * 3 + 2] = (positions[i0 + 2] + positions[i1 + 2] + positions[i2 + 2] + positions[i3 + 2]) * 0.25
+    const base = faceStart[f]
+    const sz = plan.faceSizes[f]
+    let sx = 0
+    let sy = 0
+    let sz2 = 0
+    for (let k = 0; k < sz; k++) {
+      const i = plan.inFaces[base + k] * 3
+      sx += positions[i]
+      sy += positions[i + 1]
+      sz2 += positions[i + 2]
+    }
+    const inv = 1 / sz
+    facePos[f * 3] = sx * inv
+    facePos[f * 3 + 1] = sy * inv
+    facePos[f * 3 + 2] = sz2 * inv
   }
 
   // accumulation des points de face par arête
   const edgeFaceAcc = new Float32Array(nE * 3)
   for (let f = 0; f < nF; f++) {
-    const o = f * 4
-    for (let k = 0; k < 4; k++) {
-      const e = plan.faceEdges[o + k]
+    const base = faceStart[f]
+    for (let k = 0; k < plan.faceSizes[f]; k++) {
+      const e = plan.faceEdges[base + k]
       edgeFaceAcc[e * 3] += facePos[f * 3]
       edgeFaceAcc[e * 3 + 1] += facePos[f * 3 + 1]
       edgeFaceAcc[e * 3 + 2] += facePos[f * 3 + 2]
@@ -338,17 +349,21 @@ function applyLevel(plan: LevelPlan, positions: Float32Array): Float32Array {
   return outPos
 }
 
-/** Triangulation d'un maillage quads. */
-function triangulate(quads: Uint32Array): Uint32Array {
-  const indices = new Uint32Array((quads.length / 4) * 6)
+/** Triangulation d'un maillage à polygones quelconque. */
+function triangulate(faces: Uint32Array, faceSizes: Uint8Array): Uint32Array {
+  let total = 0
+  for (const s of faceSizes) total += (s - 2) * 3
+  const indices = new Uint32Array(total)
   let k = 0
-  for (let f = 0; f < quads.length; f += 4) {
-    indices[k++] = quads[f]
-    indices[k++] = quads[f + 1]
-    indices[k++] = quads[f + 2]
-    indices[k++] = quads[f]
-    indices[k++] = quads[f + 2]
-    indices[k++] = quads[f + 3]
+  let base = 0
+  for (let f = 0; f < faceSizes.length; f++) {
+    const sz = faceSizes[f]
+    for (let i = 1; i < sz - 1; i++) {
+      indices[k++] = faces[base]
+      indices[k++] = faces[base + i]
+      indices[k++] = faces[base + i + 1]
+    }
+    base += sz
   }
   return indices
 }
@@ -361,18 +376,20 @@ export class Subdivider {
   private plans: LevelPlan[] = []
   outIndices: Uint32Array
 
-  constructor(quads: Uint32Array, levels: number) {
-    let cur = quads
+  constructor(faces: Uint32Array, faceSizes: Uint8Array, levels: number) {
+    let cur = faces
+    let curSizes = faceSizes
     // nombre de sommets du maillage d'entrée (déduit des faces)
     let nV = 0
-    for (let i = 0; i < quads.length; i++) if (quads[i] + 1 > nV) nV = quads[i] + 1
+    for (let i = 0; i < faces.length; i++) if (faces[i] + 1 > nV) nV = faces[i] + 1
     for (let l = 0; l < levels; l++) {
-      const plan = buildLevelPlan(cur, nV)
+      const plan = buildLevelPlan(cur, curSizes, nV)
       this.plans.push(plan)
       nV = plan.nV + plan.nE + plan.nF
-      cur = plan.outQuads
+      cur = plan.outFaces
+      curSizes = plan.outSizes
     }
-    this.outIndices = levels > 0 ? this.plans[levels - 1].outIndices : triangulate(quads)
+    this.outIndices = levels > 0 ? this.plans[levels - 1].outIndices : triangulate(faces, faceSizes)
   }
 
   /** Applique la subdivision à un jeu de positions. */
@@ -392,9 +409,13 @@ let cached: Subdivider | null = null
 let cachedLevels = -1
 
 /** Subdiviseur mis en cache pour la topologie de base. */
-export function getSubdivider(quads: Uint32Array, levels: number): Subdivider {
+export function getSubdivider(
+  faces: Uint32Array,
+  faceSizes: Uint8Array,
+  levels: number,
+): Subdivider {
   if (cached && cachedLevels === levels) return cached
-  cached = new Subdivider(quads, levels)
+  cached = new Subdivider(faces, faceSizes, levels)
   cachedLevels = levels
   return cached
 }

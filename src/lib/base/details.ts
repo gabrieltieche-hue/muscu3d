@@ -23,6 +23,8 @@ import * as THREE from 'three'
 
 export interface AnatomyContext {
   joints: Record<string, THREE.Vector3>
+  /** positions NORMALISÉES (hauteur = 1), pour situer les détails du visage */
+  positions: Float32Array
   masks: {
     torso: Float32Array
     pec: Float32Array
@@ -37,6 +39,8 @@ export interface AnatomyContext {
     side: Float32Array
   }
   H: number
+  /** debug : désactiver les sillons d'orteils/doigts */
+  digits?: boolean
 }
 
 interface Groove {
@@ -458,7 +462,161 @@ function bulges(ctx: AnatomyContext): Bulge[] {
     region: (i, c) => c.masks.abs[i],
     dir: 'z',
   })
+  // cou : trapèzes + sterno-cléido-mastoïdiens. Sans cela le cou est une
+  // tige et la tête paraît posée sur un piquet.
+  const neckJ = ctx.joints['neck']
+  if (neckJ) {
+    list.push({
+      c: [0, neckJ.y + 0.014],
+      r: [0.05, 0.055],
+      depth: 0.0075,
+      region: (i, c) => {
+        const p = c.positions
+        if (!p) return 0
+        const y = p[i * 3 + 1]
+        if (y < neckJ.y - 0.015 || y > neckJ.y + 0.06) return 0
+        const d = Math.hypot(p[i * 3], p[i * 3 + 2] - 0.004)
+        return 1 - smoothstep(0.03, 0.06, d)
+      },
+      dir: 'normal',
+    })
+  }
   return list
+}
+
+/**
+ * Détails du visage : globe oculaire, paupières, sourcils, lèvres.
+ *
+ * Les repères de l'œil (l-eye, l-upperlid, l-lowerlid) permettent de
+ * placer ces éléments sur n'importe quelle morphologie.
+ */
+function faceFeatures(ctx: AnatomyContext): { bulges: Bulge[]; grooves: Groove[] } {
+  const bulges: Bulge[] = []
+  const grooves: Groove[] = []
+  const eye = ctx.joints['l-eye']
+  if (!eye) return { bulges, grooves }
+
+  /** gate : proche du centre de l'œil (coordonnées normalisées) */
+  const nearEye = (i: number, r: number) => {
+    const x = ctx.positions ? ctx.positions[i * 3] : 0
+    void x
+    return 1
+  }
+  void nearEye
+
+  // globe oculaire : la zone de l'œil est bombée en sphère
+  bulges.push({
+    c: [eye.x, eye.y],
+    r: [0.0155, 0.0125],
+    depth: 0.0016,
+    region: (i, c) => {
+      const p = c.positions
+      if (!p) return 0
+      const d = Math.hypot(p[i * 3] - eye.x, p[i * 3 + 1] - eye.y, p[i * 3 + 2] - eye.z)
+      return 1 - smoothstep(0.008, 0.022, d)
+    },
+    dir: 'normal',
+    mirror: true,
+  })
+
+  // arcade sourcilière : bourrelet au-dessus de l'œil
+  bulges.push({
+    c: [eye.x, eye.y + 0.0165],
+    r: [0.019, 0.0058],
+    depth: 0.0022,
+    region: (i, c) => {
+      const p = c.positions
+      if (!p) return 0
+      const d = Math.hypot(p[i * 3] - eye.x, p[i * 3 + 1] - (eye.y + 0.0165), p[i * 3 + 2] - eye.z)
+      return 1 - smoothstep(0.01, 0.026, d)
+    },
+    dir: 'normal',
+    mirror: true,
+    rot: -0.12,
+  })
+
+  // pli de la paupière supérieure
+  grooves.push({
+    pts: [
+      [eye.x - 0.011, eye.y + 0.0032],
+      [eye.x, eye.y + 0.0072],
+      [eye.x + 0.0115, eye.y + 0.0042],
+    ],
+    width: 0.0042,
+    depth: 0.0016,
+    region: (i, c) => {
+      const p = c.positions
+      if (!p) return 0
+      const d = Math.hypot(p[i * 3] - eye.x, p[i * 3 + 1] - eye.y, p[i * 3 + 2] - eye.z)
+      return 1 - smoothstep(0.012, 0.026, d)
+    },
+    mirror: true,
+  })
+
+  // ligne de la paupière inférieure
+  grooves.push({
+    pts: [
+      [eye.x - 0.0095, eye.y - 0.0062],
+      [eye.x + 0.001, eye.y - 0.0082],
+      [eye.x + 0.0115, eye.y - 0.0048],
+    ],
+    width: 0.0035,
+    depth: 0.0011,
+    region: (i, c) => {
+      const p = c.positions
+      if (!p) return 0
+      const d = Math.hypot(p[i * 3] - eye.x, p[i * 3 + 1] - eye.y, p[i * 3 + 2] - eye.z)
+      return 1 - smoothstep(0.012, 0.026, d)
+    },
+    mirror: true,
+  })
+
+  // sillon de la bouche
+  const mouth = ctx.joints['mouth']
+  if (mouth) {
+    grooves.push({
+      pts: [
+        [mouth.x - 0.016, mouth.y + 0.0022],
+        [mouth.x, mouth.y],
+        [mouth.x + 0.016, mouth.y + 0.0022],
+      ],
+      width: 0.0034,
+      depth: 0.0014,
+      region: (i, c) => {
+        const p = c.positions
+        if (!p) return 0
+        const d = Math.hypot(p[i * 3] - mouth.x, p[i * 3 + 1] - mouth.y, p[i * 3 + 2] - mouth.z)
+        return 1 - smoothstep(0.008, 0.022, d)
+      },
+    })
+  }
+
+  // limite de cheveux : le crâne est rasé mais la ligne de cheveux reste
+  // visible sur le front (comme sur la sculpture de référence).
+  const head2 = ctx.joints['head-2']
+  if (head2) {
+    const y0 = 0.9455
+    grooves.push({
+      pts: [
+        [-0.052, y0 - 0.004],
+        [-0.026, y0 + 0.0015],
+        [0, y0 + 0.0022],
+        [0.026, y0 + 0.0015],
+        [0.052, y0 - 0.004],
+      ],
+      width: 0.0038,
+      depth: 0.0016,
+      region: (i, c) => {
+        const p = c.positions
+        if (!p) return 0
+        const y = p[i * 3 + 1]
+        if (y < y0 - 0.02 || y > y0 + 0.022) return 0
+        const d = Math.hypot(p[i * 3], p[i * 3 + 2] - 0.06)
+        return 1 - smoothstep(0.05, 0.1, d)
+      },
+    })
+  }
+  return { bulges, grooves }
 }
 
 /** Rainures des membres inférieurs. */
@@ -475,8 +633,8 @@ function legGrooves(): Groove[] {
       [0.081, 0.320],
       [0.084, 0.295],
     ],
-    width: 0.013,
-    depth: 0.0028,
+    width: 0.0095,
+    depth: 0.0022,
     region: thigh,
     mirror: true,
   })
@@ -487,8 +645,8 @@ function legGrooves(): Groove[] {
       [0.041, 0.318],
       [0.040, 0.296],
     ],
-    width: 0.016,
-    depth: 0.0016,
+    width: 0.0115,
+    depth: 0.0013,
     region: thigh,
     mirror: true,
   })
@@ -534,15 +692,88 @@ function armGrooves3D(ctx: AnatomyContext): Groove3D[] {
   return out
 }
 
+/**
+ * Séparation des orteils et des doigts.
+ *
+ * Le mesh de base ne fait qu'une masse pour les orteils : sans sillon
+ * entre eux, le pied se lit comme un moignon. Les repères `toe-f-k` et
+ * `finger-f-k` du mesh CC0 permettent de placer les sillons exactement
+ * entre les doigts, quelle que soit la morphologie.
+ */
+function digitGrooves3D(ctx: AnatomyContext): Groove3D[] {
+  const out: Groove3D[] = []
+  const j = ctx.joints
+  const mid = (a?: THREE.Vector3, b?: THREE.Vector3) =>
+    a && b ? a.clone().add(b).multiplyScalar(0.5) : null
+
+  for (const side of ['l', 'r'] as const) {
+    // --- orteils : sillon entre chaque paire de orteils ---
+    for (let f = 1; f < 5; f++) {
+      const pts: THREE.Vector3[] = []
+      for (const k of [1, 2, 3]) {
+        const a = j[`${side}-toe-${f}-${k}`]
+        const b = j[`${side}-toe-${f + 1}-${k}`]
+        const m = mid(a, b)
+        if (m) pts.push(m)
+      }
+      if (pts.length < 2) continue
+      // le sillon doit s'enfoncer légèrement entre les orteils
+      out.push({
+        pts,
+        width: 0.0032,
+        depth: 0.0011,
+        region: (i, c) => {
+          const p = c.positions
+          if (!p) return 0
+          const d = Math.hypot(p[i * 3] - pts[0].x, p[i * 3 + 1] - pts[0].y, p[i * 3 + 2] - pts[0].z)
+          return 1 - smoothstep(0.02, 0.05, d)
+        },
+      })
+    }
+    // --- doigts : sillon entre chaque paire de doigts ---
+    for (let f = 1; f < 5; f++) {
+      // le pouce (f=1) est très écarté : on ne le sépare pas des autres
+      if (f === 1) continue
+      const pts: THREE.Vector3[] = []
+      for (const k of [1, 2, 3]) {
+        const a = j[`${side}-finger-${f}-${k}`]
+        const b = j[`${side}-finger-${f + 1}-${k}`]
+        const m = mid(a, b)
+        if (m) pts.push(m)
+      }
+      if (pts.length < 2) continue
+      out.push({
+        pts,
+        width: 0.0030,
+        depth: 0.0011,
+        region: (i, c) => {
+          const p = c.positions
+          if (!p) return 0
+          const d = Math.hypot(p[i * 3] - pts[0].x, p[i * 3 + 1] - pts[0].y, p[i * 3 + 2] - pts[0].z)
+          return 1 - smoothstep(0.015, 0.04, d)
+        },
+      })
+    }
+  }
+  return out
+}
+
 let cachedGrooves: Groove[] | null = null
-let cachedBulges: Bulge[] | null = null
-function getGrooves(): Groove[] {
-  if (!cachedGrooves) cachedGrooves = [...torsoGrooves(), ...backGrooves(), ...legGrooves()]
-  return cachedGrooves
+function getGrooves(ctx: AnatomyContext): Groove[] {
+  if (!cachedGrooves) {
+    cachedGrooves = [...torsoGrooves(), ...backGrooves(), ...legGrooves()]
+  }
+  // les détails du visage dépendent des repères (qui changent avec le
+  // morphing) : ils sont donc recalculés à chaque construction.
+  const face = faceFeatures(ctx)
+  return face.grooves.length ? [...cachedGrooves, ...face.grooves] : cachedGrooves
 }
 function getBulges(ctx: AnatomyContext): Bulge[] {
-  if (!cachedBulges) cachedBulges = bulges(ctx)
-  return cachedBulges
+  // PAS de cache : les repères articulaires changent d'une construction à
+  // l'autre (morphing), un cache donnerait des volumes mal placés.
+  const face = faceFeatures(ctx)
+  const base = bulges(ctx)
+  return face.bulges.length ? [...base, ...face.bulges] : base
 }
 
 export interface AnatomyResult {
@@ -561,14 +792,16 @@ export function applyAnatomy(
   normals: Float32Array,
   ctx: AnatomyContext,
 ): AnatomyResult {
-  const grooves = getGrooves()
+  const grooves = getGrooves(ctx)
   const bl = getBulges(ctx)
   const n = positions.length / 3
   const H = ctx.H
   const gx = new Float32Array(n)
   const gy = new Float32Array(n)
-  const grooves3D = armGrooves3D(ctx)
-  const tmpVec = new THREE.Vector3()
+  const grooves3D = [
+    ...armGrooves3D(ctx),
+    ...(ctx.digits === false ? [] : digitGrooves3D(ctx)),
+  ]
 
   for (let i = 0; i < n; i++) {
     const x = positions[i * 3] / H

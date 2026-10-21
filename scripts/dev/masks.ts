@@ -1,6 +1,9 @@
 import { getMasks } from '../../src/lib/body.ts'
 import { getBaseMesh } from '../../src/lib/base/mesh.ts'
 import { posePositions } from '../../src/lib/base/pose.ts'
+
+import { loadModel } from './load-model'
+await loadModel()
 const m = getMasks()
 const b = getBaseMesh()
 const p = posePositions(b.positions, b.joints, 1).positions

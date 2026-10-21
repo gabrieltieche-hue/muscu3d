@@ -133,6 +133,12 @@ export function findPubis(positions: Float32Array, H: number): { y: number; z: n
 
 /**
  * Construit le maillage génital (unique, le même pour tous les corps).
+ *
+ * Anatomie sculptée simple, dans l'esprit de la statue : verge courte et
+ * tombante le long du scrotum, scrotum en masse unique avec un léger sillon
+ * médian. Tout est posé sur la surface pubienne réelle (donc le modèle
+ * suit la morphologie : graisse, ventre, cuisses).
+ *
  * @param pubis   position de la surface pubienne (normalisée)
  * @param scale   facteur d'échelle (plus grand sur un corps plus grand)
  */
@@ -142,37 +148,41 @@ export function buildGenitals(pubis: { y: number; z: number }, scale = 1): THREE
   const z = pubis.z
 
   {
-    // verge : à partir du pubis, vers le bas et légèrement en avant
-    const base = new THREE.Vector3(0, y - 0.006, z - 0.004)
-    const dir = new THREE.Vector3(0, -0.78, 0.62).normalize()
-    const len = 0.056 * scale
-    const n = 12
+    // --- verge : du pubis vers le bas, légèrement en avant, gland en bas ---
+    const base = new THREE.Vector3(0, y - 0.004, z + 0.001)
+    const dir = new THREE.Vector3(0, -0.94, 0.34).normalize()
+    const len = 0.05 * scale
+    const n = 14
     const path: THREE.Vector3[] = []
     const radii: number[] = []
     for (let i = 0; i <= n; i++) {
       const t = i / n
-      // léger arc : la verge descend puis s'incline un peu
       const p = base.clone().addScaledVector(dir, len * t)
-      p.x += Math.sin(t * Math.PI) * 0.004 * scale
+      // léger galbe vers l'avant (la verge pend entre les cuisses)
+      p.z += Math.sin(t * Math.PI) * 0.005 * scale
       path.push(p)
-      // profil : large à la base, rétréci, puis gland un peu renflé
-      let r = 0.0108 * scale
-      if (t < 0.12) r = 0.0108 * scale * (0.72 + (t / 0.12) * 0.28)
-      else if (t > 0.86) r = 0.0106 * scale * (1 - (t - 0.86) / 0.14 * 0.5)
-      else r = (0.0108 - 0.0014 * ((t - 0.12) / 0.74)) * scale
+      // profil : large à la base, rétréci, gland un peu renflé
+      let r: number
+      if (t < 0.1) r = 0.0092 * scale * (0.78 + (t / 0.1) * 0.22)
+      else if (t > 0.84) r = (0.0082 + (t - 0.84) / 0.16 * 0.0022) * scale
+      else r = (0.0092 - 0.001 * ((t - 0.1) / 0.74)) * scale
       radii.push(r)
     }
-    addSweptTube(mb, path, radii, 20)
+    addSweptTube(mb, path, radii, 22)
 
-    // scrotum : deux lobes de part et d'autre de la ligne médiane
+    // --- scrotum : deux lobes joints, séparés par un sillon médian ---
     for (const sx of [-1, 1]) {
-      const c = new THREE.Vector3(
-        sx * 0.0082 * scale,
-        y - 0.023 * scale,
-        z - 0.016 * scale,
-      )
-      addEllipsoid(mb, c, new THREE.Vector3(0.0086 * scale, 0.0118 * scale, 0.0105 * scale), 18, 12)
+      const c = new THREE.Vector3(sx * 0.0068 * scale, y - 0.0225 * scale, z - 0.0125 * scale)
+      addEllipsoid(mb, c, new THREE.Vector3(0.0078 * scale, 0.0125 * scale, 0.0102 * scale), 20, 14)
     }
+    // raccord scrotum / verge
+    addEllipsoid(
+      mb,
+      new THREE.Vector3(0, y - 0.0125 * scale, z - 0.006 * scale),
+      new THREE.Vector3(0.0092 * scale, 0.0105 * scale, 0.0095 * scale),
+      20,
+      12,
+    )
   }
 
   const geo = new THREE.BufferGeometry()

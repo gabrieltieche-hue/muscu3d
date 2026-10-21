@@ -1,9 +1,11 @@
 import * as THREE from 'three'
 import { getPosedBase, posePositions } from './base/pose'
 import { getBaseMesh, geometryFromPositions } from './base/mesh'
+import { getLoadedBody } from './base/model'
 import { getSubdivider } from './base/subdiv'
 import { applyTarget } from './base/morph'
 import { buildGenitals, findPubis } from './base/genitals'
+import { buildEyeDetails, IRIS_MAT, PUPIL_MAT } from './base/face'
 import { absField, applyBumpShader, buildBumpTexture, bumpUniforms } from './base/bump'
 import { applyAnatomy, applyBumpNormals } from './base/details'
 
@@ -102,16 +104,16 @@ export function getLayerWeights(p: BodyParams): LayerWeights {
     muscleMin: clamp(1 - 2 * m01, 0, 1),
     weightMax: clamp(2 * w01 - 1, 0, 1),
     weightMin: clamp(1 - 2 * w01, 0, 1),
-    vshape: local(p.lats, 0.45),
+    vshape: local(p.lats, 0.7),
     pectoral: local(p.pecs, 1.0),
     dorsi: local(p.lats, 0.7),
-    shoulderDist: local(p.shoulders, 0.7),
+    shoulderDist: local(p.shoulders, 1.0),
     upperarm: local(p.arms, 1.0),
     thigh: local(p.thighs, 1.0),
     calf: local(p.calves, 1.0),
-    neck: local(p.neck, 0.8),
-    neckWide: local(p.neck, 0.5),
-    waistIn: local(p.lats, 0.5),
+    neck: local(p.neck, 1.0),
+    neckWide: local(p.neck, 0.8),
+    waistIn: local(p.lats, 0.7),
     stomachTone: local(p.abs, 0.7),
     pelvisTone: local(p.abs, 0.35),
     buttocks: local(p.glutes, 0.8),
@@ -129,11 +131,12 @@ export function getLayerWeights(p: BodyParams): LayerWeights {
     upperlegMuscleR: local(p.thighs, 0.85),
     lowerlegMuscleL: local(p.calves, 0.85),
     lowerlegMuscleR: local(p.calves, 0.85),
-    // --- pieds : plus petits et plus étroits que le mesh de base ---
-    footScaleL: 0.55,
-    footScaleR: 0.55,
-    footHorizL: 0.4,
-    footHorizR: 0.4,
+    // --- pieds : le mesh de base a des pieds un peu larges ; on les resserre
+    //     légèrement, comme sur la sculpture de référence ---
+    footScaleL: 0.3,
+    footScaleR: 0.3,
+    footHorizL: 0.25,
+    footHorizR: 0.25,
   }
 }
 
@@ -463,6 +466,8 @@ export interface BodyBuild {
   geometry: THREE.BufferGeometry
   /** génitaux, modelés séparément */
   genitals: THREE.BufferGeometry | null
+  /** iris + pupilles */
+  eyes: { iris: THREE.BufferGeometry; pupil: THREE.BufferGeometry } | null
   metrics: BodyMetrics
   positions: Float32Array
   /** repères anatomiques après morphing + pose (normalisés) */
@@ -582,10 +587,14 @@ function morphedJoints(
 export function buildBodyGeometry(p: BodyParams): BodyBuild {
   const base = getBaseMesh()
 
-  // 1. morphologie : cibles MakeHuman empilées sur le mesh brut
+  // 1. morphologie : cibles MakeHuman empilées sur le mesh brut.
+  //    Ces cibles ne s'appliquent qu'à la base MakeHuman (topologie exacte) :
+  //    sur un modèle externe, seul le morphing procédural s'applique.
   const morphed = new Float32Array(base.positions)
-  const weights = debugLayerWeights() ?? getLayerWeights(p)
-  for (const [name, w] of Object.entries(weights)) applyTarget(morphed, name, w)
+  if (getLoadedBody()?.makehuman) {
+    const weights = debugLayerWeights() ?? getLayerWeights(p)
+    for (const [name, w] of Object.entries(weights)) applyTarget(morphed, name, w)
+  }
 
   // 2. pose de repos appliquée au corps morphé (au niveau de base : rapide)
   const pq = posePositions(morphed, morphedJoints(base, morphed))
@@ -593,7 +602,7 @@ export function buildBodyGeometry(p: BodyParams): BodyBuild {
   // 3. subdivision Catmull-Clark : on densifie AVANT de graver l'anatomie,
   //    sinon les rainures de 6 mm seraient mangées par la maille de 2 cm.
   const level = subdivLevel()
-  const dense = getSubdivider(base.quads, level).apply(pq.positions)
+  const dense = getSubdivider(base.faces, base.faceSizes, level).apply(pq.positions)
   const src = dense.positions
   const idx = dense.indices
   const n = src.length / 3
@@ -662,8 +671,17 @@ export function buildBodyGeometry(p: BodyParams): BodyBuild {
   }
 
   // 6. définition anatomique gravée (pectoraux, abdos, serratus, jambes)
+  //    les détails du visage sont calés sur les positions normalisées
+  const norm = new Float32Array(out.length)
+  for (let i = 0; i < out.length; i++) norm[i] = out[i] / H
   const anat = debugFlag('anat')
-    ? applyAnatomy(out, nrm, { joints: pq.joints, masks, H })
+    ? applyAnatomy(out, nrm, {
+        joints: pq.joints,
+        positions: norm,
+        masks,
+        H,
+        digits: debugFlag('digits'),
+      })
     : { gx: new Float32Array(n), gy: new Float32Array(n) }
 
   // 7. ancrage au sol : les pieds doivent reposer exactement sur le socle.
@@ -772,12 +790,32 @@ export function buildBodyGeometry(p: BodyParams): BodyBuild {
   const genitals = buildGenitals(pubis, H / 1.75)
   genitals.scale(H, H, H)
 
-  return { geometry, genitals, metrics, positions: out, joints: pq.joints }
+  // --- visage : rayon du globe oculaire puis iris / pupilles ---
+  let eyeR = 0.0069
+  const eyeJ = pq.joints['l-eye']
+  if (eyeJ) {
+    let sum = 0
+    let cnt = 0
+    for (let i = 0; i < n; i++) {
+      const dx = src[i * 3] - eyeJ.x
+      const dy = src[i * 3 + 1] - eyeJ.y
+      const dz = src[i * 3 + 2] - eyeJ.z
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz)
+      if (d < 0.0095) {
+        sum += d
+        cnt++
+      }
+    }
+    if (cnt > 4) eyeR = sum / cnt
+  }
+  const eyes = buildEyeDetails(pq.joints, H, eyeR)
+
+  return { geometry, genitals, eyes, metrics, positions: out, joints: pq.joints }
 }
 
 /** Groupe prêt à afficher : solide + maillage filaire superposé. */
 export function buildBody(p: BodyParams): { group: THREE.Group; metrics: BodyMetrics } {
-  const { geometry, genitals, metrics } = buildBodyGeometry(p)
+  const { geometry, genitals, eyes, metrics } = buildBodyGeometry(p)
   const group = new THREE.Group()
   const solid = new THREE.Mesh(geometry, BODY_MAT)
   solid.userData.isWire = false
@@ -789,6 +827,15 @@ export function buildBody(p: BodyParams): { group: THREE.Group; metrics: BodyMet
     g.userData.isWire = false
     g.castShadow = true
     group.add(g)
+  }
+  if (eyes) {
+    const iris = new THREE.Mesh(eyes.iris, IRIS_MAT)
+    iris.userData.isWire = false
+    iris.castShadow = true
+    group.add(iris)
+    const pupil = new THREE.Mesh(eyes.pupil, PUPIL_MAT)
+    pupil.userData.isWire = false
+    group.add(pupil)
   }
   const wire = new THREE.Mesh(geometry, WIRE_MAT)
   wire.userData.isWire = true
@@ -812,6 +859,11 @@ export const BODY_MAT = new THREE.MeshStandardMaterial({
 // Relief fin des abdominaux : la géométrie est trop grossière pour le graver,
 // le relief est donc porté par une bump map procédurale (voir base/bump.ts).
 applyBumpShader(BODY_MAT, absField(), buildBumpTexture(absField(), 256))
+
+// Grain de cuir rasé sur le crâne : sans lui, la tête reste une calotte
+// lisse de mannequin au lieu du crâne rasé de la sculpture de référence.
+bumpUniforms.uStubble.value = 0.11
+bumpUniforms.uStubbleY.value = 0.945
 
 /** Met à jour l'échelle du motif (la taille du corps change la coordonnée). */
 export function setBumpHeight(heightCm: number) {

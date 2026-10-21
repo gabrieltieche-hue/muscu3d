@@ -6,6 +6,9 @@
 import * as THREE from 'three'
 import { buildBodyGeometry, DEFAULT_PARAMS } from '../../src/lib/body'
 
+import { loadModel } from './load-model'
+await loadModel()
+
 const b = buildBodyGeometry(DEFAULT_PARAMS)
 const pos = b.positions
 const idx = b.geometry.getIndex()!.array as Uint32Array

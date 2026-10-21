@@ -20,7 +20,6 @@ import { getBaseMesh, type BaseMesh } from './mesh'
 export interface PosedMesh extends BaseMesh {
   normals: Float32Array
 }
-
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v))
 const smoothstep = (a: number, b: number, x: number) => {
   const t = clamp((x - a) / (b - a), 0, 1)
@@ -434,6 +433,7 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
     const ankleRest = jointOf(`${side}-ankle`)
     const knee0 = jointOf(`${side}-knee`)
     const toe0 = jointOf(`${side}-foot-1`)
+    const restAnkle = ankleRest.clone()
     const otherSide = side === 'l' ? 'r' : 'l'
     const otherHip = jointOf(`${otherSide}-upper-leg`)
     const otherKnee = jointOf(`${otherSide}-knee`)
@@ -464,7 +464,9 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
     }
     rotatePoints(positions, q3, hip, (i) => wLeg(i) * strength)
 
-    for (const key of [`${side}-knee`, `${side}-ankle`, `${side}-foot-1`, `${side}-foot-2`]) {
+    for (const key of Object.keys(joints)) {
+      if (!key.startsWith(`${side}-`)) continue
+      if (!/-(knee|ankle|foot-1|foot-2|toe-\d+-\d+)$/.test(key)) continue
       if (!joints[key]) continue
       joints[key] = rotatePoint(joints[key], q3, hip)
     }
@@ -479,21 +481,17 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
     //     restaient dans l'orientation d'origine et le pied se tordait ;
     //  2. la rotation d'ouverture était de signe inverse : le pied gauche
     //     pointait vers l'intérieur du corps ;
-    //  3. la rotation de la jambe autour de la hanche fait ALSOUSSER la
-    //     plante du pied (le pied ne restait plus à plat) : il faut la
-    //     remettre à l'horizontale.
+    //  3. la rotation de la jambe autour de la hanche fait aussi tourner le
+    //     pied : la plante n'était plus à plat.
     //
-    // On procède donc en deux temps : on mesure la plante APRÈS la rotation
-    // de la jambe, on la ramène à l'horizontale, puis on applique
-    // l'ouverture. Le pied est traité comme un bloc rigide : une seule
-    // rotation autour de la cheville, avec un fondu dans la zone de
-    // cheville pour ne pas casser la liaison avec le tibia.
+    // La correction est donc EXACTE et symétrique : on annule la rotation
+    // de la jambe (q3⁻¹), on remet la plante à l'horizontale, puis on
+    // ouvre le pied. (Mesurer la plante sur le maillage déjà transformé
+    // donnait des résultats non symétriques : le pied droit était tordu.)
     // -----------------------------------------------------------------------
     const ankle = joints[`${side}-ankle`]?.clone()
     if (ankle) {
-      const toeJ = joints[`${side}-foot-1`]
-
-      // poids d'appartenance au pied : sous la cheville et à moins de ~14 cm
+      // poids d'appartenance au pied : sous la cheville et à moins de ~16 cm
       // de l'axe vertical de la cheville (hors tibia, hors autre pied).
       const footWeight = (i: number): number => {
         const px = positions[i * 3]
@@ -505,26 +503,41 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
         return below * near
       }
 
-      // normale de la plante : moyenne des faces tournées vers le bas
-      const sole = soleNormal(positions, baseIndices, footWeight)
-      if (sole.lengthSq() > 1e-8) {
-        // 1) remise à plat : rotation minimale entre la plante et (0,-1,0)
-        const down = new THREE.Vector3(0, -1, 0)
-        const qFlat = new THREE.Quaternion().setFromUnitVectors(sole.clone().normalize(), down)
-        // 2) ouverture vers l'extérieur (+X pour la jambe gauche)
+      // normale de la plante AU REPOS (avant toute rotation) : mesurée sur
+      // le mesh de départ, elle est donc parfaitement symétrique.
+      const restSole = soleNormal(src, baseIndices, (i) => {
+        const px = src[i * 3]
+        const py = src[i * 3 + 1]
+        const pz = src[i * 3 + 2]
+        const horiz = Math.hypot(px - restAnkle.x, pz - restAnkle.z)
+        const below = smoothstep(restAnkle.y + 0.075, restAnkle.y - 0.012, py)
+        const near = 1 - smoothstep(0.1, 0.16, horiz)
+        return below * near
+      })
+
+      if (restSole.lengthSq() > 1e-8) {
+        // 1) annulation de la rotation de jambe
+        const qUndo = q3.clone().invert()
+        // 2) remise à plat de la plante
+        const qFlat = new THREE.Quaternion().setFromUnitVectors(
+          restSole.clone().normalize(),
+          new THREE.Vector3(0, -1, 0),
+        )
+        // 3) ouverture vers l'extérieur (+X pour la jambe gauche)
         const qYaw = new THREE.Quaternion().setFromAxisAngle(
           new THREE.Vector3(0, 1, 0),
           (s * FOOT_TOE_OUT * Math.PI) / 180,
         )
-        // composition : d'abord la remise à plat, puis l'ouverture
-        const qFoot = qYaw.clone().multiply(qFlat)
+        // composition : annulation, mise à plat, puis ouverture
+        const qFoot = qYaw.clone().multiply(qFlat).multiply(qUndo)
         rotatePoints(positions, qFoot, ankle, (i) => footWeight(i) * strength)
-        for (const key of [`${side}-foot-1`, `${side}-foot-2`]) {
+        for (const key of Object.keys(joints)) {
+          if (!key.startsWith(`${side}-`)) continue
+          if (!/-(foot-1|foot-2|toe-\d+-\d+)$/.test(key)) continue
           if (!joints[key]) continue
           joints[key] = rotatePoint(joints[key], qFoot, ankle)
         }
       }
-      void toeJ
     }
   }
 
@@ -619,6 +632,6 @@ export function getPosedBase(): PosedMesh {
   const normals = new Float32Array(geo.getAttribute('normal').array as ArrayLike<number>)
   geo.dispose()
 
-  cache = { positions, indices: base.indices, quads: base.quads, joints, normals }
+  cache = { positions, indices: base.indices, faces: base.faces, faceSizes: base.faceSizes, joints, normals }
   return cache
 }

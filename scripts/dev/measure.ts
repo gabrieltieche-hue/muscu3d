@@ -9,6 +9,9 @@
 import * as THREE from 'three'
 import { buildBodyGeometry, DEFAULT_PARAMS, type BodyParams } from '../../src/lib/body'
 
+import { loadModel } from './load-model'
+await loadModel()
+
 export interface Section {
   /** périmètre en mètres (toutes boucles confondues) */
   perimeter: number

@@ -140,12 +140,16 @@ export class Viewer {
     this.renderer.toneMappingExposure = 1.0
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.shadowMap.enabled = true
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
+    this.renderer.shadowMap.type = THREE.PCFShadowMap
     container.appendChild(this.renderer.domElement)
 
     this.scene.background = this.gradientBackground()
     this.scene.environment = studioEnvironment(this.renderer)
     this.scene.environmentIntensity = 0.72
+    // debug : ?shadow=0 désactive les ombres portées
+    if (typeof location !== 'undefined' && new URLSearchParams(location.search).get('shadow') === '0') {
+      this.renderer.shadowMap.enabled = false
+    }
 
     const w = container.clientWidth || 800
     const h = container.clientHeight || 600
@@ -196,8 +200,8 @@ export class Viewer {
     this.key.shadow.camera.right = 0.5
     this.key.shadow.camera.top = 0.5
     this.key.shadow.camera.bottom = -0.5
-    this.key.shadow.bias = -0.0006
-    this.key.shadow.normalBias = 0.008
+    this.key.shadow.bias = -0.0015
+    this.key.shadow.normalBias = 0.022
     this.key.shadow.radius = 4
     this.key.target.position.set(0, 0, 0)
     this.scene.add(this.key)

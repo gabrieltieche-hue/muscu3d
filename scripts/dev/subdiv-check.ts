@@ -6,6 +6,9 @@
 import { getBaseMesh } from '../../src/lib/base/mesh'
 import { getSubdivider } from '../../src/lib/base/subdiv'
 
+import { loadModel } from './load-model'
+await loadModel()
+
 const base = getBaseMesh()
 
 function stats(pos: Float32Array, idx: Uint16Array | Uint32Array) {
@@ -46,14 +49,14 @@ function boundaryEdges(quads: Uint32Array): number {
 }
 
 const s0 = stats(base.positions, base.indices)
-console.log('base   :', base.positions.length / 3, 'sommets,', base.quads.length / 4, 'quads')
+console.log('base   :', base.positions.length / 3, 'sommets,', base.faces.length / 4, 'quads')
 console.log('  bbox x', s0.minX.toFixed(4), s0.maxX.toFixed(4), ' y', s0.minY.toFixed(4), s0.maxY.toFixed(4), ' z', s0.minZ.toFixed(4), s0.maxZ.toFixed(4))
-console.log('  volume', s0.vol.toFixed(6), ' arêtes non-manifoldes :', boundaryEdges(base.quads))
+console.log('  volume', s0.vol.toFixed(6), ' arêtes non-manifoldes :', boundaryEdges(base.faces))
 
 for (const level of [1, 2]) {
-  const sub = getSubdivider(base.quads, level)
+  const sub = getSubdivider(base.faces, base.faceSizes, level)
   const tPlan = Date.now()
-  void getSubdivider(base.quads, level)
+  void getSubdivider(base.faces, base.faceSizes, level)
   void tPlan
   // première passe (plan + calcul)
   const t0 = Date.now()

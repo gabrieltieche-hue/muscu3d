@@ -132,11 +132,20 @@ export const bumpUniforms = {
   uBumpRect: { value: new THREE.Vector4(0, 0, 1, 1) },
   uBumpInvH: { value: 1 },
   uBumpStrength: { value: 0.55 },
+  /** force du grain de cuir rasé (0 = désactivé) */
+  uStubble: { value: 0.0 },
+  /** hauteur (normalisée) à partir de laquelle le grain s'applique */
+  uStubbleY: { value: 0.9 },
 }
 
 /**
  * Branche la perturbation de normale dans le shader d'un matériau standard.
  * La normale géométrique est Penwick-tiltée par le gradient du champ.
+ *
+ * S'y ajoute un **grain de cuir rasé** : bruit procédural en espace objet,
+ * appliqué sur le crâne au-dessus de `uStubbleY`. C'est ce qui donne à la
+ * tête l'aspect « crâne rasé » de la sculpture de référence, au lieu d'une
+ * calotte lisse de mannequin.
  */
 export function applyBumpShader(material: THREE.Material, field: BumpField, tex: THREE.Texture) {
   bumpUniforms.uBumpTex.value = tex
@@ -146,16 +155,20 @@ export function applyBumpShader(material: THREE.Material, field: BumpField, tex:
     shader.uniforms.uBumpRect = bumpUniforms.uBumpRect
     shader.uniforms.uBumpInvH = bumpUniforms.uBumpInvH
     shader.uniforms.uBumpStrength = bumpUniforms.uBumpStrength
+    shader.uniforms.uStubble = bumpUniforms.uStubble
+    shader.uniforms.uStubbleY = bumpUniforms.uStubbleY
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
         `#include <common>
-        varying vec2 vBumpXY;`,
+        varying vec2 vBumpXY;
+        varying vec3 vBumpPos;`,
       )
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
-        vBumpXY = position.xy;`,
+        vBumpXY = position.xy;
+        vBumpPos = position;`,
       )
     shader.fragmentShader = shader.fragmentShader
       .replace(
@@ -165,7 +178,26 @@ export function applyBumpShader(material: THREE.Material, field: BumpField, tex:
         uniform vec4 uBumpRect;
         uniform float uBumpInvH;
         uniform float uBumpStrength;
-        varying vec2 vBumpXY;`,
+        uniform float uStubble;
+        uniform float uStubbleY;
+        varying vec2 vBumpXY;
+        varying vec3 vBumpPos;
+
+        float mHash31(vec3 p) {
+          p = fract(p * 0.3183099 + vec3(0.71, 0.113, 0.419));
+          p *= 17.0;
+          return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+        }
+        float mNoise(vec3 x) {
+          vec3 i = floor(x);
+          vec3 f = fract(x);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(mix(mHash31(i), mHash31(i + vec3(1,0,0)), f.x),
+                mix(mHash31(i + vec3(0,1,0)), mHash31(i + vec3(1,1,0)), f.x), f.y),
+            mix(mix(mHash31(i + vec3(0,0,1)), mHash31(i + vec3(1,0,1)), f.x),
+                mix(mHash31(i + vec3(0,1,1)), mHash31(i + vec3(1,1,1)), f.x), f.y), f.z);
+        }`,
       )
       .replace(
         '#include <normal_fragment_maps>',
@@ -183,6 +215,21 @@ export function applyBumpShader(material: THREE.Material, field: BumpField, tex:
                         (1.0 - smoothstep(vec2(0.91), vec2(1.0), uvB));
             float f = fade.x * fade.y;
             normal = normalize(normal - gView * uBumpStrength * f);
+          }
+          // --- grain de cuir rasé (crâne) ---
+          if (uStubble > 0.0) {
+            vec3 sp = vBumpPos * uBumpInvH;
+            float gate = smoothstep(uStubbleY, uStubbleY + 0.02, sp.y);
+            if (gate > 0.0) {
+              float e = 0.0011;
+              float f0 = mNoise(sp * 700.0);
+              float fx = mNoise((sp + vec3(e, 0.0, 0.0)) * 700.0);
+              float fy = mNoise((sp + vec3(0.0, e, 0.0)) * 700.0);
+              vec2 g = vec2(fx - f0, fy - f0) / e;
+              vec3 gObj = vec3(g.x, g.y, 0.0) / max(uBumpInvH, 1e-4);
+              vec3 gView = (viewMatrix * vec4(gObj, 0.0)).xyz;
+              normal = normalize(normal - gView * uStubble * gate * 0.0016);
+            }
           }
         }`,
       )
