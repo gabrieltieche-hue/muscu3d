@@ -455,15 +455,40 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
     // même partage de peau que pour le bras : la cuisse appartient à la jambe,
     // le bassin et l'autre jambe au tronc (sinon l'entre-jambes se déchire)
     const wLeg = (i: number) => {
-      const p = new THREE.Vector3(src[i], src[i + 1], src[i + 2])
+      // ATTENTION : `i` est l'INDEX DU SOMMET (et non l'offset dans le
+      // tableau plat) : il faut multiplier par 3 pour lire les positions.
+      const p = new THREE.Vector3(src[i * 3], src[i * 3 + 1], src[i * 3 + 2])
       let wLegB = 0
       for (const [ba, bb, sg] of legBones) wLegB += boneWeight(p, ba, bb, sg)
       let wPelv = 0
       for (const [ba, bb, sg] of pelvisBones) wPelv += boneWeight(p, ba, bb, sg)
       return wLegB / Math.max(wLegB + wPelv, 1e-6)
     }
-    rotatePoints(positions, q3, hip, (i) => wLeg(i) * strength)
 
+    // Poids d'appartenance au pied : sous la cheville et à moins de ~16 cm de
+    // l'axe vertical de la cheville (hors tibia, hors autre pied).
+    //
+    // CRUCIAL : le pied doit tourner RIGIDEMENT avec la jambe. L'os
+    // cheville→orteil ne couvre que le gros orteil : le petit orteil n'avait
+    // qu'un poids de ~0,13 dans la rotation de la jambe, alors que la
+    // correction du pied l'appliquait à 100 %. Les deux transformations ne se
+    // compensaient plus et l'orteil était arraché du pied (« pics »).
+    const footWeightRest = (i: number): number => {
+      const px = src[i * 3]
+      const py = src[i * 3 + 1]
+      const pz = src[i * 3 + 2]
+      const horiz = Math.hypot(px - restAnkle.x, pz - restAnkle.z)
+      const below = smoothstep(restAnkle.y + 0.075, restAnkle.y - 0.012, py)
+      const near = 1 - smoothstep(0.1, 0.16, horiz)
+      return below * near
+    }
+    const wLegFull = (i: number) => Math.max(wLeg(i), footWeightRest(i))
+
+    const skipLeg =
+      typeof location !== 'undefined' && new URLSearchParams(location.search).get('noleg') === '1'
+    if (!skipLeg) {
+      rotatePoints(positions, q3, hip, (i) => wLegFull(i) * strength)
+    }
     for (const key of Object.keys(joints)) {
       if (!key.startsWith(`${side}-`)) continue
       if (!/-(knee|ankle|foot-1|foot-2|toe-\d+-\d+)$/.test(key)) continue
@@ -490,30 +515,16 @@ function solvePose(positions: Float32Array, jointsIn: Record<string, THREE.Vecto
     // donnait des résultats non symétriques : le pied droit était tordu.)
     // -----------------------------------------------------------------------
     const ankle = joints[`${side}-ankle`]?.clone()
-    if (ankle) {
-      // poids d'appartenance au pied : sous la cheville et à moins de ~16 cm
-      // de l'axe vertical de la cheville (hors tibia, hors autre pied).
-      const footWeight = (i: number): number => {
-        const px = positions[i * 3]
-        const py = positions[i * 3 + 1]
-        const pz = positions[i * 3 + 2]
-        const horiz = Math.hypot(px - ankle.x, pz - ankle.z)
-        const below = smoothstep(ankle.y + 0.075, ankle.y - 0.012, py)
-        const near = 1 - smoothstep(0.1, 0.16, horiz)
-        return below * near
-      }
+    const skipFoot =
+      typeof location !== 'undefined' && new URLSearchParams(location.search).get('nofoot') === '1'
+    if (ankle && !skipFoot) {
+      // le bloc pied est rotationnel : même poids que pour la jambe, donc
+      // les deux transformations se composent en une rotation rigide.
+      const footWeight = (i: number): number => footWeightRest(i)
 
       // normale de la plante AU REPOS (avant toute rotation) : mesurée sur
       // le mesh de départ, elle est donc parfaitement symétrique.
-      const restSole = soleNormal(src, baseIndices, (i) => {
-        const px = src[i * 3]
-        const py = src[i * 3 + 1]
-        const pz = src[i * 3 + 2]
-        const horiz = Math.hypot(px - restAnkle.x, pz - restAnkle.z)
-        const below = smoothstep(restAnkle.y + 0.075, restAnkle.y - 0.012, py)
-        const near = 1 - smoothstep(0.1, 0.16, horiz)
-        return below * near
-      })
+      const restSole = soleNormal(src, baseIndices, footWeightRest)
 
       if (restSole.lengthSq() > 1e-8) {
         // 1) annulation de la rotation de jambe
