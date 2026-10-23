@@ -1,0 +1,23 @@
+# Dépendances
+node_modules/
+
+# Build
+dist/
+*.tsbuildinfo
+
+# Caches outils
+.vite/
+.cache/
+
+# Divers système / éditeurs
+.DS_Store
+Thumbs.db
+*.log
+*.swp
+.idea/
+.vscode/
+
+# Sorties temporaires des scripts
+/tmp/
+shots/
+*.png.tmp
