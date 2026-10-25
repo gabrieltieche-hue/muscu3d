@@ -249,36 +249,37 @@ function torsoGrooves(): Groove[] {
     mirror: true,
   })
 
-  // rainures horizontales des abdominaux (3 lignes = 4 rangées)
+  // rainures horizontales des abdominaux (3 lignes = 4 rangées). Chaque
+  // colonne a sa propre rainure : la ligne blanche centrale reste continue.
   for (const y of [0.581, 0.617, 0.653]) {
     list.push({
       pts: [
-        [-0.040, y + 0.004],
-        [-0.021, y + 0.0005],
-        [0, y - 0.001],
+        [0.006, y - 0.001],
         [0.021, y + 0.0005],
         [0.040, y + 0.004],
       ],
       width: 0.0085,
       depth: 0.0016,
       region: (i, c) => c.masks.abs[i],
+      mirror: true,
     })
   }
 
-  // rainures verticales des abdominaux
-  for (const x of [0.026, -0.026]) {
-    list.push({
-      pts: [
-        [x, 0.5615],
-        [x, 0.581],
-        [x, 0.617],
-        [x, 0.653],
-      ],
-      width: 0.0080,
-      depth: 0.0014,
-      region: (i, c) => c.masks.abs[i],
-    })
-  }
+  // bord externe du grand droit (ligne semi-lunaire), entre abdos et obliques.
+  // L'ancien tracé passait au centre de chaque colonne et coupait les abdos
+  // en deux : d'où l'aspect « grille ».
+  list.push({
+    pts: [
+      [0.050, 0.5615],
+      [0.050, 0.581],
+      [0.050, 0.617],
+      [0.050, 0.653],
+    ],
+    width: 0.0080,
+    depth: 0.0014,
+    region: (i, c) => c.masks.abs[i],
+    mirror: true,
+  })
 
   // serratus (dents de scie) : 3 obliques sur le flanc
   for (const [k, y0] of [0.6885, 0.6675, 0.6465].entries()) {

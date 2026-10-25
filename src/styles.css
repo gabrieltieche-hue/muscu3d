@@ -34,13 +34,6 @@ body {
   grid-template-rows: 60px minmax(0, 1fr);
 }
 
-.app.cur {
-  --accent: #38bdf8;
-}
-.app.tgt {
-  --accent: #a3e635;
-}
-
 /* ------------------------------------------------------------- topbar */
 .topbar {
   grid-column: 1 / -1;
@@ -71,23 +64,16 @@ body {
   color: var(--dim);
 }
 
-.modes {
-  display: flex;
-  gap: 6px;
-}
-.modes button {
-  background: #1a212b;
-  color: var(--dim);
-  border: 1px solid var(--border);
+.badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 5px 10px;
   border-radius: 999px;
-  padding: 7px 14px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.modes button.on {
-  background: color-mix(in srgb, var(--accent) 18%, #10151c);
-  border-color: var(--accent);
-  color: #fff;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  background: #151a22;
+  white-space: nowrap;
 }
 
 .chips {
@@ -146,8 +132,7 @@ body {
   gap: 6px;
 }
 .views button,
-.presets button,
-.actions button {
+.presets button {
   background: #1a212b;
   color: var(--text);
   border: 1px solid var(--border);
@@ -157,8 +142,7 @@ body {
   cursor: pointer;
 }
 .views button:hover,
-.presets button:hover,
-.actions button:hover {
+.presets button:hover {
   border-color: var(--accent);
   color: #fff;
 }
@@ -170,7 +154,11 @@ body {
   flex-direction: column;
   gap: 6px;
   font-size: 12px;
-  color: var(--dim);
+  color: #e6ebf2;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(13, 16, 21, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 .toggles label {
   display: flex;
@@ -186,7 +174,17 @@ body {
   bottom: 10px;
   left: 14px;
   font-size: 11px;
-  color: #4d5866;
+  color: #2f353e;
+}
+.hint.loading {
+  max-width: min(560px, calc(100% - 28px));
+  padding: 8px 11px;
+  border-radius: 8px;
+  background: rgba(13, 16, 21, 0.88);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 /* ------------------------------------------------------------- panneau */
@@ -207,6 +205,30 @@ body {
   gap: 8px;
   margin-bottom: 14px;
 }
+.file {
+  font-size: 11px;
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notice {
+  margin-bottom: 14px;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: 8px;
+  background: #151a22;
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.notice b {
+  color: var(--text);
+}
+
 .tag {
   font-size: 10px;
   font-weight: 700;
@@ -216,15 +238,6 @@ body {
   border: 1px solid var(--accent);
   color: var(--accent);
 }
-.actions {
-  display: flex;
-  gap: 6px;
-}
-.actions button {
-  font-size: 11px;
-  padding: 5px 8px;
-}
-
 .group {
   border-top: 1px solid var(--border);
   padding-top: 12px;
@@ -260,6 +273,11 @@ body {
   color: var(--accent);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+}
+
+input[type='range']:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 input[type='range'] {
@@ -304,6 +322,14 @@ input[type='range']::-moz-range-thumb {
 }
 .presets button {
   width: 100%;
+}
+.presets button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.presets button:disabled:hover {
+  border-color: var(--border);
+  color: var(--text);
 }
 
 .note {

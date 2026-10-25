@@ -21,3 +21,6 @@ Thumbs.db
 /tmp/
 shots/
 *.png.tmp
+
+# Captures de vérification (générées)
+/artifacts/

@@ -850,10 +850,10 @@ export function buildBody(p: BodyParams): { group: THREE.Group; metrics: BodyMet
  * sur la sculpture de référence).
  */
 export const BODY_MAT = new THREE.MeshStandardMaterial({
-  color: 0x8d8b87,
-  roughness: 0.6,
+  color: 0x969696,
+  roughness: 0.7,
   metalness: 0,
-  envMapIntensity: 0.85,
+  envMapIntensity: 0.5,
 })
 
 // Relief fin des abdominaux : la géométrie est trop grossière pour le graver,

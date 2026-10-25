@@ -127,7 +127,7 @@ function rotatePoint(p: THREE.Vector3, q: THREE.Quaternion, pivot: THREE.Vector3
  */
 function soleNormal(
   positions: Float32Array,
-  indices: Uint16Array,
+  indices: Uint16Array | Uint32Array,
   footWeight: (i: number) => number,
 ): THREE.Vector3 {
   const n = new THREE.Vector3()

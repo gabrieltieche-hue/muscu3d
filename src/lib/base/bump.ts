@@ -45,13 +45,19 @@ export function absField(): BumpField {
       bumps.push({ a: 0.0048, cx: sx * 0.026, cy: y, rx: 0.0215, ry: 0.0165, rot: 0 })
     }
   }
-  // sillons horizontaux
+  // sillons horizontaux : un par colonne, avec une coupure au milieu (ligne
+  // blanche). Une barre continue sur toute la largeur donnait l'aspect
+  // « grille de chocolat » au lieu de blocs séparés.
   for (const y of [0.581, 0.617, 0.653]) {
-    grooves.push({ a: -0.0042, cx: 0, cy: y, rx: 0.046, ry: GROOVE_W, rot: 0 })
+    for (const sx of [-1, 1]) {
+      grooves.push({ a: -0.0042, cx: sx * 0.0265, cy: y, rx: 0.0215, ry: GROOVE_W, rot: 0 })
+    }
   }
-  // sillons verticaux (entre les deux colonnes)
+  // bord externe du grand droit (ligne semi-lunaire) : c'est lui qui sépare
+  // les abdos des obliques. Il ne faut PAS le placer au centre des colonnes
+  // (ancien bug : chaque abdo était coupé en deux).
   for (const sx of [-1, 1]) {
-    grooves.push({ a: -0.0034, cx: sx * 0.026, cy: 0.617, rx: GROOVE_W, ry: 0.058, rot: 0 })
+    grooves.push({ a: -0.0030, cx: sx * 0.050, cy: 0.617, rx: GROOVE_W, ry: 0.058, rot: 0 })
   }
   // ligne blanche
   grooves.push({ a: -0.0032, cx: 0, cy: 0.617, rx: GROOVE_W, ry: 0.062, rot: 0 })
@@ -131,7 +137,7 @@ export const bumpUniforms = {
   uBumpTex: { value: null as THREE.Texture | null },
   uBumpRect: { value: new THREE.Vector4(0, 0, 1, 1) },
   uBumpInvH: { value: 1 },
-  uBumpStrength: { value: 0.55 },
+  uBumpStrength: { value: 0.22 },
   /** force du grain de cuir rasé (0 = désactivé) */
   uStubble: { value: 0.0 },
   /** hauteur (normalisée) à partir de laquelle le grain s'applique */

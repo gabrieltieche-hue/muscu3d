@@ -15,7 +15,7 @@ import { getLoadedBody } from './model'
 export interface BaseMesh {
   /** positions normalisées (hauteur du corps = 1) */
   positions: Float32Array
-  indices: Uint16Array
+  indices: Uint32Array
   /** faces d'origine (polygones) et leur taille : source de la subdivision */
   faces: Uint32Array
   faceSizes: Uint8Array

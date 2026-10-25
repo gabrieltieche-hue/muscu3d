@@ -21,7 +21,7 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js'
 const GradeShader = {
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
-    uVignette: { value: 0.42 },
+    uVignette: { value: 0.26 },
     uGrain: { value: 0.016 },
     uTime: { value: 0 },
   },
@@ -115,7 +115,6 @@ export class Viewer {
   private camera: THREE.PerspectiveCamera
   private controls: OrbitControls
   private pivot = new THREE.Group()
-  private ring: THREE.Mesh
   private raf = 0
   private ro: ResizeObserver
   private container: HTMLElement
@@ -137,15 +136,18 @@ export class Viewer {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.renderer.setSize(container.clientWidth || 800, container.clientHeight || 600)
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 0.92
+    this.renderer.toneMappingExposure = 0.98
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = THREE.PCFShadowMap
     container.appendChild(this.renderer.domElement)
 
-    this.scene.background = this.gradientBackground()
+    // Fond gris neutre UNI (référence studio) : pas de dégradé, pas de ciel.
+    // L'environnement (boîtes à lumière) reste séparé : il ne sert qu'aux
+    // reflets doux du matériau, pas au fond visible.
+    this.scene.background = new THREE.Color(0x8c8c8c)
     this.scene.environment = studioEnvironment(this.renderer)
-    this.scene.environmentIntensity = 0.5
+    this.scene.environmentIntensity = 0.38
     // debug : ?shadow=0 désactive les ombres portées
     if (typeof location !== 'undefined' && new URLSearchParams(location.search).get('shadow') === '0') {
       this.renderer.shadowMap.enabled = false
@@ -167,30 +169,42 @@ export class Viewer {
     this.controls.autoRotateSpeed = 1.0
     this.controls.update()
 
-    // --- éclairage studio ---
-    // Hémisphérique très doux : évite les noirs bouchés sous le socle.
-    this.scene.add(new THREE.HemisphereLight(0xdfe6f0, 0x4a4844, 0.09))
+    // --- éclairage studio (trois points + ambiance) ---
+    // Ambiance : débouche les creux (aisselles, entrejambe, sous le socle)
+    // sans aplatir le modelé. C'est une lumière d'appoint, pas la lumière
+    // principale.
+    this.scene.add(new THREE.AmbientLight(0xffffff, 0.1))
+    this.scene.add(new THREE.HemisphereLight(0xe4ebf5, 0x5a5854, 0.1))
 
-    // Clé : modelé principal, en haut à droite et devant. Elle ne projette
-    // PAS d'ombre : sur la sculpture de référence, l'ombre au sol est un
-    // simple contact, pas une longue ombre portée.
-    const key = new THREE.DirectionalLight(0xfff4e6, 2.9)
-    key.position.set(2.9, 3.1, 2.3)
+    // Clé : modelé principal, en haut à droite et devant. Elle sculpte les
+    // pectoraux et les abdos. Elle ne projette PAS d'ombre : sur la
+    // sculpture de référence, l'ombre au sol est un simple contact.
+    const key = new THREE.DirectionalLight(0xfff8ef, 2.9)
+    key.position.set(2.7, 3.3, 2.5)
     this.scene.add(key)
 
-    // Remplissage froid, large, à gauche.
-    const fill = new THREE.DirectionalLight(0xdae4ff, 0.32)
-    fill.position.set(-3.4, 1.5, 2.2)
+    // Remplissage froid, large, à gauche : il tient les ombres du côté
+    // opposé sans les boucher.
+    const fill = new THREE.DirectionalLight(0xdce6ff, 0.28)
+    fill.position.set(-3.4, 1.6, 2.2)
     this.scene.add(fill)
 
-    // Contre-jour : détache la silhouette du fond.
-    const rim = new THREE.DirectionalLight(0xffffff, 1.35)
-    rim.position.set(-1.7, 2.9, -3.4)
+    // Contre-jour gauche : détache la silhouette du fond gris et dessine le
+    // liseré clair sur l'épaule et le bras (visible sur les vues de dos et
+    // de profil de la référence).
+    const rim = new THREE.DirectionalLight(0xffffff, 1.5)
+    rim.position.set(-2.1, 2.9, -3.3)
     this.scene.add(rim)
+
+    // Second contre-jour, plus bas à droite : évite que le dos soit plat et
+    // souligne les omoplates et le triceps.
+    const rim2 = new THREE.DirectionalLight(0xffffff, 0.7)
+    rim2.position.set(3.0, 1.8, -2.8)
+    this.scene.add(rim2)
 
     // Ombre : lumière quasi zénithale, elle plaque la statue au socle et
     // dessine une ombre de contact serrée (comme sur la référence).
-    this.key = new THREE.DirectionalLight(0xffffff, 0.85)
+    this.key = new THREE.DirectionalLight(0xffffff, 0.55)
     this.key.position.set(0.35, 6.0, 0.45)
     this.key.castShadow = true
     this.key.shadow.mapSize.set(2048, 2048)
@@ -208,24 +222,26 @@ export class Viewer {
     this.scene.add(this.key.target)
 
     // --- socle ---
+    // Socle large et bas, comme sur la référence : le corps ne doit pas
+    // déborder. Rayon 0,38 m pour une statue de 1,75 m.
     const pedestal = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.3, 0.315, 0.042, 160, 1),
+      new THREE.CylinderGeometry(0.38, 0.398, 0.044, 160, 1),
       new THREE.MeshStandardMaterial({
-        color: 0x6c6a66,
-        roughness: 0.84,
+        color: 0x5e5e5e,
+        roughness: 0.88,
         metalness: 0,
         envMapIntensity: 0.5,
       }),
     )
-    pedestal.position.y = -0.021
+    pedestal.position.y = -0.022
     pedestal.receiveShadow = true
     this.scene.add(pedestal)
 
     // Biseau supérieur : un second disque très fin, plus clair, qui capte la
     // lumière et dessine l'arête du socle comme sur la référence.
     const bevel = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.2985, 0.3, 0.005, 160, 1),
-      new THREE.MeshStandardMaterial({ color: 0x87847f, roughness: 0.72, metalness: 0 }),
+      new THREE.CylinderGeometry(0.3785, 0.38, 0.005, 160, 1),
+      new THREE.MeshStandardMaterial({ color: 0x757575, roughness: 0.8, metalness: 0 }),
     )
     bevel.position.y = 0.0015
     bevel.receiveShadow = true
@@ -233,26 +249,17 @@ export class Viewer {
 
     // --- ombre de contact (assombrit le socle sous les pieds) ---
     const contact = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.46, 0.36).rotateX(-Math.PI / 2),
+      new THREE.PlaneGeometry(0.66, 0.54).rotateX(-Math.PI / 2),
       new THREE.MeshBasicMaterial({
         map: this.contactShadow(),
         transparent: true,
-        opacity: 0.6,
+        opacity: 0.75,
         depthWrite: false,
       }),
     )
     contact.position.set(0, 0.0045, 0.01)
     contact.renderOrder = 1
     this.scene.add(contact)
-
-    // anneau d'accent (couleur = mode actif) : très discret sur le socle
-    this.ring = new THREE.Mesh(
-      new THREE.RingGeometry(0.235, 0.2385, 128).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: 0x8d9aa4, transparent: true, opacity: 0.14 }),
-    )
-    this.ring.position.y = 0.0008
-    this.ring.renderOrder = 2
-    this.scene.add(this.ring)
 
     this.scene.add(this.pivot)
 
@@ -293,22 +300,6 @@ export class Viewer {
     this.ro = new ResizeObserver(() => this.resize())
     this.ro.observe(container)
     this.animate()
-  }
-
-  private gradientBackground(): THREE.Texture {
-    const c = document.createElement('canvas')
-    c.width = 1024
-    c.height = 1024
-    const ctx = c.getContext('2d')!
-    const g = ctx.createRadialGradient(512, 330, 20, 512, 470, 760)
-    g.addColorStop(0, '#9a9a9a')
-    g.addColorStop(0.5, '#848484')
-    g.addColorStop(1, '#5f5f5f')
-    ctx.fillStyle = g
-    ctx.fillRect(0, 0, 1024, 1024)
-    const tex = new THREE.CanvasTexture(c)
-    tex.colorSpace = THREE.SRGBColorSpace
-    return tex
   }
 
   private contactShadow(): THREE.Texture {
@@ -387,10 +378,6 @@ export class Viewer {
     this.pivot.add(g)
   }
 
-  setAccent(hex: number) {
-    ;(this.ring.material as THREE.MeshBasicMaterial).color.setHex(hex)
-  }
-
   setWireframeVisible(v: boolean) {
     this.pivot.traverse((o) => {
       if (o.userData.isWire) o.visible = v
@@ -402,12 +389,12 @@ export class Viewer {
   }
 
   setCameraPreset(p: 'face' | 'profil' | 'dos' | 'troisquarts') {
-    const target = new THREE.Vector3(0, 0.88, 0)
+    const target = new THREE.Vector3(0, 0.9, 0)
     const pos = {
-      face: new THREE.Vector3(0, 0.95, 4.45),
-      profil: new THREE.Vector3(4.45, 0.95, 0),
-      dos: new THREE.Vector3(0, 0.95, -4.45),
-      troisquarts: new THREE.Vector3(3.35, 1.18, 2.85),
+      face: new THREE.Vector3(0, 0.98, 4.55),
+      profil: new THREE.Vector3(4.55, 0.98, 0),
+      dos: new THREE.Vector3(0, 0.98, -4.55),
+      troisquarts: new THREE.Vector3(3.4, 1.2, 2.9),
     }[p]
     this.camera.position.copy(pos)
     this.controls.target.copy(target)

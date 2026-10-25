@@ -3,10 +3,12 @@
 > Ce fichier est destiné au **prochain agent IA** qui reprend le projet.
 > Il contient : le but du produit, l'état exact du code, ce qui a été fait, les bugs
 > connus et vérifiés, les pistes validées, et les recettes de l'environnement.
-> Dernière mise à jour : **2026-10-21 (session 3)**.
+> Dernière mise à jour : **2026-10-25 (session 4)**.
 > La session 3 a basculé le projet sur l'architecture **« modèle 3D en fichier »** :
 > le corps est un `.glb` chargé par `GLTFLoader`, plus une sculpture procédurale.
-> Lire **§1bis** (goal visuel) puis **§3.6** (ce qui a été fait) avant de toucher au code.
+> La session 4 a figé le modèle et poussé le rendu studio (fond uni, argile mate,
+> contre-jours, socle large, interface verrouillée) : lire **§1bis**, **§3.6** puis
+> **§3.7** avant de toucher au code.
 > Langue de travail du projet : **français** (UI, code commenté, réponses).
 
 ---
@@ -294,6 +296,55 @@ fiable), soit **depuis la silhouette** (détection A-pose / T-pose). Un mode
 `?joints=1` affiche les repères pour valider l'import.
 
 ---
+
+### 3.7 — session 4 : rendu « statue studio » + modèle externe + interface figée
+
+**1. Chargement plus souple (`src/lib/base/model.ts`).** L'ordre est désormais
+`modele.glb` → `modele.gltf` → `body.glb` : déposer un fichier dans `public/` suffit
+à le substituer, sans recompiler. `?model=xxx.glb` force un fichier. Le cache est
+indexé par URL (avant, un seul chargement global). Les indices sont passés en
+**Uint32** : un modèle dense (> 65 535 sommets) était tronqué par l'ancien
+`Uint16Array` (corruption silencieuse). `soleNormal()` accepte maintenant les deux
+types d'indices.
+
+**2. Modèle externe (`src/lib/statue.ts`).** Si le fichier n'est pas la base
+MakeHuman (`extras.targets` absent), il est affiché **tel quel** : matériau argile
+unique `MeshStandardMaterial` (`#969696`, roughness 0,7, metalness 0), échelle
+normalisée à 1,75 m, centrage X/Z, pieds à y = 0. Pas de morphing, pas de métriques,
+pas de filaire (le toggle est masqué). C'est le mode « mon modèle téléchargé ».
+
+**3. Rendu studio (`src/scene/viewer.ts`).**
+- fond **uni** `#8c8c8c` (l'ancien dégradé radial a été supprimé) ; l'environnement
+  PMREM reste séparé, uniquement pour les reflets ;
+- ambiance `AmbientLight` 0,1 + hémisphérique 0,1 ; clé `#fff8ef` 2,9 ; fill 0,28 ;
+  **deux** contre-jours (1,5 et 0,7) ; exposition 0,98 ; environnement 0,38 ;
+- socle élargi (rayon 0,38 m au lieu de 0,30) pour que les pieds ne débordent pas ;
+- anneau d'accent supprimé (il n'existe pas sur les références) ;
+- `PCFShadowMap` + ombre de contact manuelle (attention : `PCFSoftShadowMap` a été
+  retiré de Three 0.186) ;
+- correction des rainures abdominales : les sillons verticaux étaient placés au
+  **centre** de chaque colonne (chaque abdo était coupé en deux, d'où l'aspect
+  « grille »). Ils sont maintenant à la ligne blanche (x = 0) et au bord externe
+  (x ≈ ±0,050), avec des rainures horizontales par colonne.
+
+**4. Interface figée (`src/App.tsx`).** `FIXED_PARAMS` (profil de référence) est la
+seule source : les 13 curseurs et les 4 profils types sont `disabled`, les modes
+actuel/cible et le `localStorage` ont été retirés. Les vues caméra, la rotation auto,
+le socle et le toggle filaire (modèle de référence) fonctionnent toujours. Les chips
+de mesures restent celles du profil figé. Un bandeau explique le verrouillage et
+comment déposer un `modele.glb`.
+
+**5. Vérifications faites en session 4 (VM cloud, pas la tablette).**
+`npx tsc --noEmit` ✅, `npm run build` ✅ (bundle ~1,7 Mo), captures headless
+Chromium/SwiftShader en Face / Profil / Dos / 3-4, et audit DOM : 13/13 curseurs
+désactivés, 4/4 presets désactivés, canvas présent, source `body.glb`, mode externe
+testé avec un GLB CC0 de 109k triangles (chargé, centré, posé), erreur propre sur
+`?model=introuvable.glb`. Le script `scripts/shot.sh` reste celui de la tablette.
+
+**6. Limites ajoutées.** Un modèle externe garde sa pose (souvent A-pose) et n'a pas
+de cibles de morphing. Le profil de référence reste le corps MakeHuman du dépôt :
+c'est lui qui ressemble le plus aux images. `README.md` a été réécrit (liens vers
+MakeHuman/MPFB, Blender Studio CC0, Innerscene CC0, Sketchfab CC-BY).
 
 ## 4. Bugs connus, causes identifiées
 

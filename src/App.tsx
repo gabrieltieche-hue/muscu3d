@@ -1,17 +1,35 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Viewer } from './scene/viewer'
 import { loadBodyModel, getLoadedBody } from './lib/base/model'
-import {
-  buildBody,
-  DEFAULT_PARAMS,
-  PRESETS,
-  type BodyParams,
-  type BodyMetrics,
-} from './lib/body'
+import { buildBody, DEFAULT_PARAMS, type BodyParams, type BodyMetrics } from './lib/body'
+import { buildStatue } from './lib/statue'
 
-const LS_KEY = 'muscu3d.v1'
-
-type Mode = 'current' | 'target'
+/**
+ * Profil de référence FIGÉ.
+ *
+ * Le projet ne modifie plus la géométrie en direct : la statue affichée est
+ * toujours ce profil (calé sur les images de `docs/reference/`). Les curseurs
+ * restent visibles pour montrer le futur réglage, mais sont désactivés.
+ *
+ * Base : DEFAULT_PARAMS (le profil « sec et sportif » du moteur), avec une
+ * taille plus fine et des cuisses/fessiers resserrés pour retrouver la
+ * silhouette en V des références.
+ */
+const FIXED_PARAMS: BodyParams = {
+  ...DEFAULT_PARAMS,
+  fat: 10,
+  belly: 12,
+  neck: 74,
+  shoulders: 96,
+  lats: 94,
+  pecs: 88,
+  abs: 84,
+  glutes: 64,
+  thighs: 72,
+  calves: 74,
+  arms: 84,
+  forearms: 68,
+}
 
 interface SliderDef {
   key: keyof BodyParams
@@ -61,55 +79,43 @@ const GROUPS: { title: string; sliders: SliderDef[] }[] = [
   },
 ]
 
-function loadState(): { current: BodyParams; target: BodyParams } {
-  try {
-    const raw = localStorage.getItem(LS_KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      if (parsed?.current && parsed?.target) {
-        return { current: { ...DEFAULT_PARAMS, ...parsed.current }, target: { ...DEFAULT_PARAMS, ...parsed.target } }
-      }
-    }
-  } catch {
-    /* état illisible : on repart des valeurs par défaut */
-  }
-  return {
-    current: { ...DEFAULT_PARAMS },
-    target: { ...DEFAULT_PARAMS, ...PRESETS.athletique },
-  }
-}
+/** Presets : conservés à l'écran, désactivés (modèle figé). */
+const PRESETS: { label: string }[] = [
+  { label: 'Sec' },
+  { label: 'Athlétique' },
+  { label: 'Bodybuilder' },
+  { label: 'Massif' },
+]
 
 export default function App() {
   const mountRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<Viewer | null>(null)
-  const initial = useMemo(loadState, [])
 
-  const [mode, setMode] = useState<Mode>(() =>
-    new URLSearchParams(location.search).get('mode') === 'target' ? 'target' : 'current',
-  )
-  const [current, setCurrent] = useState<BodyParams>(initial.current)
-  const [target, setTarget] = useState<BodyParams>(initial.target)
   const [rotate, setRotate] = useState(false)
   const [wire, setWire] = useState(() => new URLSearchParams(location.search).get('wire') === '1')
   const [metrics, setMetrics] = useState<BodyMetrics | null>(null)
   const [ready, setReady] = useState(false)
+  const [built, setBuilt] = useState(false)
+  const [raw, setRaw] = useState(false)
+  const [source, setSource] = useState('—')
   const [error, setError] = useState<string | null>(null)
 
-  const params = mode === 'current' ? current : target
+  const params = FIXED_PARAMS
 
   useEffect(() => {
-    // Le corps vient d'un fichier modèle 3D (public/body.glb) : on le charge
-    // d'abord, le morphing s'appuie ensuite dessus.
-    // `?model=xxx.glb` permet d'essayer un autre modèle à la volée.
+    // 1. charger le fichier modèle : `modele.glb` s'il existe, sinon le corps
+    //    de référence `body.glb`. `?model=xxx.glb` force un fichier précis.
     let alive = true
-    const url = new URLSearchParams(location.search).get('model') || 'body.glb'
-    loadBodyModel(url)
-      .then(() => {
-        if (alive) setReady(true)
+    loadBodyModel()
+      .then((model) => {
+        if (!alive) return
+        setSource(model.url)
+        setRaw(!model.makehuman)
+        setReady(true)
       })
       .catch((e) => {
         console.error(e)
-        if (alive) setError(String(e?.message ?? e))
+        if (alive) setError(e instanceof Error ? e.message : String(e))
       })
     return () => {
       alive = false
@@ -119,15 +125,16 @@ export default function App() {
   useEffect(() => {
     const v = new Viewer(mountRef.current!)
     viewerRef.current = v
-    const view = new URLSearchParams(location.search).get('view')
+    const qs = new URLSearchParams(location.search)
+    const view = qs.get('view')
     if (view === 'face' || view === 'profil' || view === 'dos' || view === 'troisquarts') {
       v.setCameraPreset(view)
     }
-    const cam = new URLSearchParams(location.search).get('cam')
-    const tgt = new URLSearchParams(location.search).get('target')
+    const cam = qs.get('cam')
+    const tgt = qs.get('target')
     if (cam) {
       const p = cam.split(',').map(Number)
-      const t = (tgt ?? '0,0.92,0').split(',').map(Number)
+      const t = (tgt ?? '0,0.9,0').split(',').map(Number)
       if (p.length === 3 && t.length === 3 && [...p, ...t].every(Number.isFinite)) {
         v.setCameraPosition(p[0], p[1], p[2], t[0], t[1], t[2])
       }
@@ -141,77 +148,81 @@ export default function App() {
   useEffect(() => {
     const v = viewerRef.current
     if (!v || !ready) return
-    const { group, metrics: m } = buildBody(params)
-    v.setBody(group)
-    v.setWireframeVisible(wire)
-    v.setAccent(mode === 'current' ? 0x38bdf8 : 0xa3e635)
-    setMetrics(m)
-  }, [params, mode, wire, ready])
+    const model = getLoadedBody()
+    if (!model) return
+    try {
+      if (model.makehuman) {
+        // Modèle de référence : moteur complet (morphing figé + pose +
+        // subdivision + anatomie). Les paramètres ne changent plus.
+        const { group, metrics: m } = buildBody(FIXED_PARAMS)
+        v.setBody(group)
+        setMetrics(m)
+      } else {
+        // Modèle externe : affiché tel quel, matériau argile, pas de
+        // métriques (la topologie n'est pas connue).
+        const { group } = buildStatue()
+        v.setBody(group)
+        setMetrics(null)
+      }
+      v.setWireframeVisible(wire)
+      setBuilt(true)
+    } catch (e) {
+      console.error(e)
+      setError(e instanceof Error ? e.message : String(e))
+    }
+    // `wire` est appliqué séparément ci-dessous : on ne reconstruit pas la
+    // géométrie à chaque clic.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready])
 
   // mode debug : affichage des repères anatomiques du modèle
   useEffect(() => {
     const v = viewerRef.current
-    if (!v || !ready) return
+    if (!v || !built) return
     const show = new URLSearchParams(location.search).get('joints') === '1'
-    v.setJoints(show ? getLoadedBody()?.joints ?? null : null)
-  }, [ready])
-
-  useEffect(() => {
-    // Surcharge des paramètres via l'URL (debug) : ?fat=20&lats=30&arms=80
-    const qs = new URLSearchParams(location.search)
-    const patch: Partial<BodyParams> = {}
-    for (const k of [
-      'height', 'fat', 'belly', 'neck', 'shoulders', 'lats', 'pecs', 'abs',
-      'glutes', 'thighs', 'calves', 'arms', 'forearms',
-    ] as const) {
-      const v = qs.get(k)
-      if (v !== null && Number.isFinite(Number(v))) (patch as Record<string, number>)[k] = Number(v)
-    }
-    if (Object.keys(patch).length) {
-      setCurrent((c) => ({ ...c, ...patch }))
-      setTarget((t) => ({ ...t, ...patch }))
-    }
-
-    const preset = new URLSearchParams(location.search).get('preset')
-    if (preset && PRESETS[preset]) {
-      setTarget({ ...DEFAULT_PARAMS, ...PRESETS[preset] })
-    }
-  }, [])
-
-  useEffect(() => {
-    localStorage.setItem(LS_KEY, JSON.stringify({ current, target }))
-  }, [current, target])
+    v.setJoints(show ? (getLoadedBody()?.joints ?? null) : null)
+  }, [built])
 
   useEffect(() => {
     viewerRef.current?.setAutoRotate(rotate)
   }, [rotate])
 
-  const update = (patch: Partial<BodyParams>) => {
-    if (mode === 'current') setCurrent((c) => ({ ...c, ...patch }))
-    else setTarget((t) => ({ ...t, ...patch }))
-  }
-
-  const applyPreset = (name: keyof typeof PRESETS) => update({ ...PRESETS[name], height: params.height })
-  const resetActive = () => (mode === 'current' ? setCurrent({ ...DEFAULT_PARAMS }) : setTarget({ ...DEFAULT_PARAMS }))
+  useEffect(() => {
+    viewerRef.current?.setWireframeVisible(wire)
+  }, [wire])
 
   const fmt = (v: number, d = 1) => v.toFixed(d)
 
+  const slider = (s: SliderDef) => (
+    <div className="slider" key={s.key}>
+      <div className="row">
+        <label>{s.label}</label>
+        <span>
+          {params[s.key]}
+          {s.unit ?? ''}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={s.min}
+        max={s.max}
+        step={1}
+        value={params[s.key]}
+        disabled
+        aria-label={s.label}
+      />
+    </div>
+  )
+
   return (
-    <div className={'app ' + (mode === 'current' ? 'cur' : 'tgt')}>
+    <div className="app">
       <header className="topbar">
         <div className="brand">
           MUSCU<span>3D</span>
-          <em>prototype corps paramétrique</em>
+          <em>statue 3D · rendu studio</em>
         </div>
 
-        <div className="modes">
-          <button className={mode === 'current' ? 'on' : ''} onClick={() => setMode('current')}>
-            Corps actuel
-          </button>
-          <button className={mode === 'target' ? 'on' : ''} onClick={() => setMode('target')}>
-            Corps cible
-          </button>
-        </div>
+        <div className="badge">MODÈLE FIGÉ</div>
 
         {metrics && (
           <div className="chips">
@@ -259,25 +270,33 @@ export default function App() {
             <input type="checkbox" checked={rotate} onChange={(e) => setRotate(e.target.checked)} />
             Rotation auto
           </label>
-          <label>
-            <input type="checkbox" checked={wire} onChange={(e) => setWire(e.target.checked)} />
-            Maillage
-          </label>
+          {!raw && (
+            <label>
+              <input type="checkbox" checked={wire} onChange={(e) => setWire(e.target.checked)} />
+              Maillage
+            </label>
+          )}
         </div>
         <div className="hint">glisse pour tourner · pince pour zoomer</div>
-        {!ready && !error && <div className="hint loading">chargement du modèle 3D…</div>}
-        {error && <div className="hint loading">modèle indisponible : {error}</div>}
+        {!built && !error && <div className="hint loading">chargement du modèle 3D…</div>}
+        {error && (
+          <div className="hint loading">
+            modèle indisponible : {error}
+            <br />
+            dépose un fichier .glb/.gltf dans public/ sous le nom <b>modele.glb</b>.
+          </div>
+        )}
       </div>
 
       <aside className="panel">
         <div className="panel-head">
-          <div className={'tag ' + (mode === 'current' ? 'cur' : 'tgt')}>
-            {mode === 'current' ? 'CORPS ACTUEL' : 'CORPS CIBLE'}
-          </div>
-          <div className="actions">
-            <button onClick={() => setTarget({ ...current })}>actuel → cible</button>
-            <button onClick={resetActive}>réinitialiser</button>
-          </div>
+          <div className="tag">STATUE 3D</div>
+          <span className="file">{source}</span>
+        </div>
+
+        <div className="notice">
+          <b>Modèle figé.</b> La morphologie vient du fichier 3D : les curseurs ne modifient plus la
+          géométrie en direct. {raw ? 'Ce fichier externe n’a pas les cibles de morphing du modèle de référence.' : 'Le profil est calé sur les images de référence.'}
         </div>
 
         <div className="group">
@@ -286,54 +305,34 @@ export default function App() {
             <label>Taille</label>
             <span>{params.height} cm</span>
           </div>
-          <input
-            type="range"
-            min={150}
-            max={200}
-            step={1}
-            value={params.height}
-            onChange={(e) => update({ height: +e.target.value })}
-          />
+          <input type="range" min={150} max={200} step={1} value={params.height} disabled aria-label="Taille" />
         </div>
 
         {GROUPS.map((g) => (
           <div className="group" key={g.title}>
             <h3>{g.title}</h3>
-            {g.sliders.map((s) => (
-              <div className="slider" key={s.key}>
-                <div className="row">
-                  <label>{s.label}</label>
-                  <span>
-                    {params[s.key]}
-                    {s.unit ?? ''}
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min={s.min}
-                  max={s.max}
-                  step={1}
-                  value={params[s.key]}
-                  onChange={(e) => update({ [s.key]: +e.target.value } as Partial<BodyParams>)}
-                />
-              </div>
-            ))}
+            {g.sliders.map(slider)}
           </div>
         ))}
 
         <div className="group">
-          <h3>Profils types</h3>
+          <h3>Profils types (inactifs)</h3>
           <div className="presets">
-            <button onClick={() => applyPreset('sec')}>Sec</button>
-            <button onClick={() => applyPreset('athletique')}>Athlétique</button>
-            <button onClick={() => applyPreset('bodybuilder')}>Bodybuilder</button>
-            <button onClick={() => applyPreset('massif')}>Massif</button>
+            {PRESETS.map((p) => (
+              <button key={p.label} disabled>
+                {p.label}
+              </button>
+            ))}
           </div>
         </div>
 
         <p className="note">
-          Le poids et les mensurations sont <b>estimés</b> à partir du volume du maillage. C'est un prototype
-          visuel : la simulation physiologique viendra ensuite.
+          Le poids et les mensurations sont <b>estimés</b> à partir du volume du maillage.
+          <br />
+          <br />
+          Pour utiliser un autre fichier : dépose-le dans <b>public/</b> sous le nom{' '}
+          <b>modele.glb</b>, puis recharge la page. Le corps de référence reste{' '}
+          <b>body.glb</b>.
         </p>
       </aside>
     </div>

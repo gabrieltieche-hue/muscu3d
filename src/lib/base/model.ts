@@ -8,20 +8,27 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
  * modèle** (glTF binaire `.glb`), chargé avec le chargeur standard de
  * Three.js (`GLTFLoader`), comme n'importe quel modèle 3D.
  *
- * Le fichier contient :
- *   - le maillage `body` (13 380 sommets, 13 378 quads) ;
- *   - un nœud par repère anatomique (`l-shoulder`, `l-knee`…) : c'est le
- *     squelette logiciel que le morphing et la pose utilisent.
+ * Deux natures de fichiers sont acceptées :
+ *   1. le modèle de référence du projet (`body.glb`, base MakeHuman CC0) :
+ *      il contient les repères anatomiques et les quads d'origine, donc le
+ *      moteur de morphing / pose / anatomie peut s'appliquer ;
+ *   2. un modèle externe (`modele.glb` ou `modele.gltf`, déposé dans
+ *      `public/`) : il est affiché tel quel, avec le matériau argile studio
+ *      (voir `src/lib/statue.ts`).
  *
- * Origine : MakeHuman base mesh (CC0 1.0) — voir scripts/assets/README.md.
- * Conversion : scripts/prep-glb.py.
+ * L'ordre de recherche par défaut est `modele.glb` → `modele.gltf` →
+ * `body.glb` : il suffit de déposer son fichier sous le nom `modele.glb`
+ * pour qu'il remplace le corps de référence, sans modifier le code.
+ * `?model=autre.glb` force un fichier précis (debug / comparaison).
  */
 
 export interface LoadedBody {
+  /** fichier réellement chargé (affiché dans l'interface) */
+  url: string
   /** positions normalisées (hauteur du corps = 1) */
   positions: Float32Array
-  /** indices triangulés */
-  indices: Uint16Array
+  /** indices triangulés (32 bits : un modèle dense dépasse 65 535 sommets) */
+  indices: Uint32Array
   /** faces d'origine (polygones) : quads pour MakeHuman, triangles sinon */
   faces: Uint32Array
   /** nombre de sommets par face */
@@ -30,10 +37,15 @@ export interface LoadedBody {
   joints: Record<string, THREE.Vector3>
   /** vrai si le mesh est la base MakeHuman (donc compatible cibles CC0) */
   makehuman: boolean
+  /** scène glTF complète : affichage brut d'un modèle externe */
+  scene: THREE.Group
 }
 
+/** Fichiers essayés dans l'ordre quand `?model=` n'est pas fourni. */
+const DEFAULT_MODEL_FILES = ['modele.glb', 'modele.gltf', 'body.glb']
+
 let loaded: LoadedBody | null = null
-let pending: Promise<LoadedBody> | null = null
+const cache = new Map<string, Promise<LoadedBody>>()
 
 /** Décode une chaîne base64 en tableau d'octets. */
 function b64ToBytes(b64: string): Uint8Array {
@@ -43,18 +55,18 @@ function b64ToBytes(b64: string): Uint8Array {
   return out
 }
 
-function extract(gltf: { scene: THREE.Group; userData: Record<string, unknown> }): LoadedBody {
+function extract(gltf: { scene: THREE.Group; userData: Record<string, unknown> }, url: string): LoadedBody {
   let mesh: THREE.Mesh | null = null
   gltf.scene.traverse((o) => {
     if (!mesh && (o as THREE.Mesh).isMesh) mesh = o as THREE.Mesh
   })
-  if (!mesh) throw new Error('body.glb : aucun maillage trouvé')
+  if (!mesh) throw new Error(`${url} : aucun maillage trouvé`)
   const geo = (mesh as THREE.Mesh).geometry
   const posAttr = geo.getAttribute('position')
   const positions = new Float32Array(posAttr.array as ArrayLike<number>)
   const idxAttr = geo.getIndex()
-  if (!idxAttr) throw new Error('body.glb : maillage non indexé')
-  const indices = new Uint16Array(idxAttr.array as ArrayLike<number>)
+  if (!idxAttr) throw new Error(`${url} : maillage non indexé`)
+  const indices = new Uint32Array(idxAttr.array as ArrayLike<number>)
 
   // faces d'origine : les quads si l'extension est présente (MakeHuman),
   // sinon les triangles du maillage.
@@ -81,37 +93,82 @@ function extract(gltf: { scene: THREE.Group; userData: Record<string, unknown> }
     }
   })
 
-  return { positions, indices, faces, faceSizes, joints, makehuman: gltf.userData.targets === true }
+  return {
+    url,
+    positions,
+    indices,
+    faces,
+    faceSizes,
+    joints,
+    makehuman: gltf.userData.targets === true,
+    scene: gltf.scene,
+  }
+}
+
+/** Fichier demandé par `?model=`, sinon null. */
+function queryModel(): string | null {
+  if (typeof location === 'undefined') return null
+  return new URLSearchParams(location.search).get('model')
 }
 
 /**
- * Charge le modèle depuis une URL. Renvoie la même instance si le modèle
- * est déjà chargé (le morphing et la pose l'utilisent de façon synchrone).
+ * Charge le modèle depuis une URL (ou tente la liste par défaut).
+ * Renvoie la même instance si ce fichier est déjà chargé.
  *
- * `?model=autre.glb` permet de tester un autre modèle sans recompiler.
+ * `?model=autre.glb` permet de tester un autre modèle sans recompiler ;
+ * sans paramètre, `modele.glb` puis `modele.gltf` puis `body.glb`.
  */
-export function loadBodyModel(url = 'body.glb'): Promise<LoadedBody> {
-  if (loaded) return Promise.resolve(loaded)
-  if (pending) return pending
-  pending = fetch(url)
-    .then((r) => {
-      if (!r.ok) throw new Error(`${url} : HTTP ${r.status}`)
-      return r.arrayBuffer()
-    })
-    .then((buf) => parseBodyModel(buf))
+export function loadBodyModel(input?: string | string[]): Promise<LoadedBody> {
+  const requested = queryModel()
+  const urls = requested ? [requested] : input ? (Array.isArray(input) ? input : [input]) : DEFAULT_MODEL_FILES
+  const key = urls.join('|')
+
+  const cached = cache.get(key)
+  if (cached) return cached
+
+  const pending = (async () => {
+    const failures: string[] = []
+    for (const url of urls) {
+      try {
+        const res = await fetch(url)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        // En développement, Vite renvoie l'index.html pour un fichier absent :
+        // il faut le rejeter explicitement au lieu de laisser le parseur glTF
+        // échouer avec un message obscur.
+        const type = res.headers.get('content-type') ?? ''
+        if (type.includes('text/html')) throw new Error('fichier absent (index.html renvoyé)')
+        const buf = await res.arrayBuffer()
+        const model = await parseBodyModel(buf, url)
+        loaded = model
+        return model
+      } catch (e) {
+        failures.push(`${url} (${e instanceof Error ? e.message : String(e)})`)
+      }
+    }
+    throw new Error(
+      `aucun modèle 3D chargeable : ${failures.join(' · ')}. ` +
+        `Dépose un fichier .glb/.gltf dans public/ (modele.glb ou body.glb).`,
+    )
+  })()
+
+  cache.set(key, pending)
+  // Un échec ne doit pas rester en cache : on peut corriger le fichier et
+  // recharger la page, ou réessayer après un import.
+  pending.catch(() => cache.delete(key))
   return pending
 }
 
 /** Analyse un buffer glTF binaire (utilisé aussi par les scripts Node). */
-export function parseBodyModel(buffer: ArrayBuffer): Promise<LoadedBody> {
+export function parseBodyModel(buffer: ArrayBuffer, url = 'body.glb'): Promise<LoadedBody> {
   return new Promise<LoadedBody>((resolve, reject) => {
     const loader = new GLTFLoader()
+    const base = url.includes('/') ? url.slice(0, url.lastIndexOf('/') + 1) : ''
     loader.parse(
       buffer,
-      '',
+      base,
       (gltf) => {
         try {
-          const model = extract(gltf)
+          const model = extract(gltf, url)
           loaded = model
           resolve(model)
         } catch (e) {
