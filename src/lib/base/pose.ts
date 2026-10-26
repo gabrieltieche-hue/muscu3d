@@ -633,6 +633,11 @@ export function posePositions(
 
 let cache: PosedMesh | null = null
 
+/** Vide le cache : à appeler quand on change de fichier modèle. */
+export function clearPoseCache(): void {
+  cache = null
+}
+
 export function getPosedBase(): PosedMesh {
   if (cache) return cache
   const base = getBaseMesh()

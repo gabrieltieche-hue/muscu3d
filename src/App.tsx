@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Viewer } from './scene/viewer'
-import { loadBodyModel, getLoadedBody } from './lib/base/model'
-import { buildBody, type BodyMetrics } from './lib/body'
+import { loadBodyModel, getLoadedBody, type LoadedBody } from './lib/base/model'
+import { clearBaseMeshCache } from './lib/base/mesh'
+import { clearPoseCache } from './lib/base/pose'
+import { buildBody, PRESETS, type BodyMetrics, type BodyParams } from './lib/body'
 import { FIXED_PARAMS } from './lib/referenceProfile'
-import { buildStatue } from './lib/statue'
+import { buildParametricStatue, buildStatue, type StatueBody } from './lib/statue'
 
 type ViewKey = 'face' | 'profil' | 'dos' | 'troisquarts'
 
@@ -21,16 +23,52 @@ const VIEW_LABEL: Record<ViewKey, string> = {
   troisquarts: 'Vue trois-quarts',
 }
 
-/** Groupes musculaires affichés dans la fiche (échelle 0–100). */
-const MORPHO: { label: string; value: number }[] = [
-  { label: 'Épaules', value: FIXED_PARAMS.shoulders },
-  { label: 'Dorsaux', value: FIXED_PARAMS.lats },
-  { label: 'Pectoraux', value: FIXED_PARAMS.pecs },
-  { label: 'Abdominaux', value: FIXED_PARAMS.abs },
-  { label: 'Bras', value: FIXED_PARAMS.arms },
-  { label: 'Cuisses', value: FIXED_PARAMS.thighs },
-  { label: 'Mollets', value: FIXED_PARAMS.calves },
+interface SliderDef {
+  key: keyof BodyParams
+  label: string
+  min: number
+  max: number
+  unit?: string
+}
+
+/** Groupes de curseurs affichés dans la fiche. */
+const GROUPS: { title: string; sliders: SliderDef[] }[] = [
+  {
+    title: 'Corpulence',
+    sliders: [
+      { key: 'fat', label: 'Masse grasse', min: 5, max: 40, unit: '%' },
+      { key: 'belly', label: 'Ventre', min: 0, max: 100 },
+    ],
+  },
+  {
+    title: 'Haut du corps',
+    sliders: [
+      { key: 'shoulders', label: 'Épaules', min: 0, max: 100 },
+      { key: 'lats', label: 'Dorsaux', min: 0, max: 100 },
+      { key: 'pecs', label: 'Pectoraux', min: 0, max: 100 },
+      { key: 'neck', label: 'Cou', min: 0, max: 100 },
+      { key: 'abs', label: 'Abdominaux', min: 0, max: 100 },
+    ],
+  },
+  {
+    title: 'Bras',
+    sliders: [
+      { key: 'arms', label: 'Biceps / triceps', min: 0, max: 100 },
+      { key: 'forearms', label: 'Avant-bras', min: 0, max: 100 },
+    ],
+  },
+  {
+    title: 'Bas du corps',
+    sliders: [
+      { key: 'glutes', label: 'Fessiers', min: 0, max: 100 },
+      { key: 'thighs', label: 'Cuisses', min: 0, max: 100 },
+      { key: 'calves', label: 'Mollets', min: 0, max: 100 },
+    ],
+  },
 ]
+
+const PARAM_KEYS = Object.keys(FIXED_PARAMS) as (keyof BodyParams)[]
+const LS_KEY = 'muscu3d.params.v2'
 
 const SOURCE_URL =
   'https://static.makehumancommunity.org/makehuman/faq/are_makehuman_files_free.html'
@@ -107,9 +145,41 @@ function initialFlag(name: string): boolean {
   return new URLSearchParams(location.search).get(name) === '1'
 }
 
+/** Paramètres initiaux : référence, puis localStorage, puis `?fat=…` etc. */
+function initialParams(): BodyParams {
+  const p: BodyParams = { ...FIXED_PARAMS }
+  try {
+    const stored = localStorage.getItem(LS_KEY)
+    if (stored) {
+      const parsed = JSON.parse(stored) as Partial<BodyParams>
+      for (const k of PARAM_KEYS) {
+        if (Number.isFinite(parsed[k])) p[k] = parsed[k] as number
+      }
+    }
+  } catch {
+    /* état illisible : on garde le profil de référence */
+  }
+  const qs = new URLSearchParams(location.search)
+  for (const k of PARAM_KEYS) {
+    const v = qs.get(k)
+    if (v !== null && Number.isFinite(Number(v))) p[k] = Number(v)
+  }
+  return p
+}
+
+/** Un modèle externe est paramétrable s'il n'a qu'un maillage. */
+function canMorph(model: LoadedBody): boolean {
+  let meshes = 0
+  model.scene.traverse((o) => {
+    if ((o as { isMesh?: boolean }).isMesh) meshes++
+  })
+  return meshes === 1 && model.positions.length / 3 >= 1000 && !model.makehuman
+}
+
 export default function App() {
   const mountRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<Viewer | null>(null)
+  const statueRef = useRef<StatueBody | null>(null)
 
   const [view, setView] = useState<ViewKey>(initialView)
   const [rotate, setRotate] = useState(() => initialFlag('rotate'))
@@ -117,14 +187,25 @@ export default function App() {
   const [pedestal, setPedestal] = useState(
     () => new URLSearchParams(location.search).get('socle') !== '0',
   )
+  const [params, setParams] = useState<BodyParams>(initialParams)
 
   const [metrics, setMetrics] = useState<BodyMetrics | null>(null)
   const [ready, setReady] = useState(false)
   const [built, setBuilt] = useState(false)
   const [raw, setRaw] = useState(false)
-  const [source, setSource] = useState('body.glb')
+  const [source, setSource] = useState('modele.glb')
   const [fileSize, setFileSize] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [switching, setSwitching] = useState(false)
+
+  const wireRef = useRef(wire)
+  const pedestalRef = useRef(pedestal)
+  const paramsRef = useRef(params)
+  const timerRef = useRef<number | null>(null)
+  const lastBuildRef = useRef(0)
+  wireRef.current = wire
+  pedestalRef.current = pedestal
+  paramsRef.current = params
 
   const downloadHref = raw ? source : 'statue.glb'
 
@@ -170,7 +251,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 3. construire la sculpture (une seule fois, profil figé).
+  // 3. construire la sculpture pour le fichier chargé.
   useEffect(() => {
     const v = viewerRef.current
     if (!v || !ready) return
@@ -178,29 +259,70 @@ export default function App() {
     if (!model) return
     try {
       if (model.makehuman) {
-        // Modèle de référence : morphing figé + pose + subdivision + anatomie.
-        const { group, metrics: m } = buildBody(FIXED_PARAMS)
+        clearBaseMeshCache()
+        clearPoseCache()
+        const { group, metrics: m } = buildBody(paramsRef.current)
         v.setBody(group)
+        statueRef.current = null
         setMetrics(m)
+      } else if (canMorph(model)) {
+        // modèle téléchargé d'un seul tenant : masques anatomiques + curseurs
+        const statue = buildParametricStatue(paramsRef.current)
+        v.setBody(statue.group)
+        statueRef.current = statue
+        setMetrics(statue.update(paramsRef.current))
       } else {
-        // Modèle externe : affiché tel quel, matériau argile studio.
-        const { group } = buildStatue()
-        v.setBody(group)
+        v.setBody(buildStatue().group)
+        statueRef.current = null
         setMetrics(null)
       }
-      v.setWireframeVisible(wire)
-      v.setPedestalVisible(pedestal)
+      v.setWireframeVisible(wireRef.current)
+      v.setPedestalVisible(pedestalRef.current)
+      lastBuildRef.current = performance.now()
       setBuilt(true)
     } catch (e) {
       console.error(e)
       setError(e instanceof Error ? e.message : String(e))
+      setBuilt(true)
     }
     // `wire` et `pedestal` sont appliqués séparément : on ne reconstruit pas
     // la géométrie à chaque clic.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready])
+  }, [ready, source])
 
-  // 4. appliquer les réglages d'affichage.
+  // 4. curseurs : mise à jour en direct.
+  useEffect(() => {
+    if (!built) return
+    const model = getLoadedBody()
+    if (!model) return
+
+    if (!model.makehuman) {
+      if (statueRef.current) setMetrics(statueRef.current.update(params))
+      return
+    }
+
+    // MakeHuman : la reconstruction complète coûte ~80 ms. On la limite à
+    // ~12 images/s pour que le curseur reste fluide.
+    if (timerRef.current !== null) return
+    const wait = Math.max(0, 80 - (performance.now() - lastBuildRef.current))
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null
+      lastBuildRef.current = performance.now()
+      const viewer = viewerRef.current
+      if (!viewer) return
+      try {
+        const { group, metrics: m } = buildBody(paramsRef.current)
+        viewer.setBody(group)
+        viewer.setWireframeVisible(wireRef.current)
+        setMetrics(m)
+      } catch (e) {
+        console.error(e)
+      }
+    }, wait)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params, built])
+
+  // 5. appliquer les réglages d'affichage.
   useEffect(() => {
     viewerRef.current?.setCameraPreset(view)
   }, [view])
@@ -217,7 +339,16 @@ export default function App() {
     viewerRef.current?.setPedestalVisible(pedestal)
   }, [pedestal])
 
-  // mode debug : affichage des repères anatomiques du modèle
+  // 6. persistance locale des paramètres.
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(params))
+    } catch {
+      /* quota plein : sans conséquence */
+    }
+  }, [params])
+
+  // 7. mode debug : affichage des repères anatomiques du modèle.
   useEffect(() => {
     const v = viewerRef.current
     if (!v || !built) return
@@ -225,7 +356,7 @@ export default function App() {
     v.setJoints(show ? (getLoadedBody()?.joints ?? null) : null)
   }, [built])
 
-  // poids du fichier téléchargeable (affiché dans la fiche)
+  // 8. poids du fichier téléchargeable (affiché dans la fiche).
   useEffect(() => {
     let alive = true
     setFileSize(null)
@@ -242,7 +373,15 @@ export default function App() {
     }
   }, [downloadHref])
 
-  // raccourcis clavier : 1–4 vues, R rotation, M maillage, S socle
+  // 9. nettoyage du minuteur de reconstruction.
+  useEffect(
+    () => () => {
+      if (timerRef.current !== null) clearTimeout(timerRef.current)
+    },
+    [],
+  )
+
+  // 10. raccourcis clavier : 1–4 vues, R rotation, M maillage, S socle.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null
@@ -256,7 +395,34 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  const change = (patch: Partial<BodyParams>) => setParams((p) => ({ ...p, ...patch }))
+  const applyPreset = (name: keyof typeof PRESETS) =>
+    setParams((p) => ({ ...p, ...PRESETS[name], height: p.height }))
+  const reset = () => setParams({ ...FIXED_PARAMS })
+
+  const switchModel = async (url: string) => {
+    if (switching || url === source) return
+    setSwitching(true)
+    try {
+      const model = await loadBodyModel(url, true)
+      clearBaseMeshCache()
+      clearPoseCache()
+      setError(null)
+      setBuilt(false)
+      setMetrics(null)
+      setSource(model.url)
+      setRaw(!model.makehuman)
+      setReady(true)
+    } catch (e) {
+      console.error(e)
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSwitching(false)
+    }
+  }
+
   const viewIndex = VIEWS.findIndex((v) => v.key === view) + 1
+  const heightPct = ((params.height - 150) / 50) * 100
 
   return (
     <div className="app">
@@ -276,7 +442,7 @@ export default function App() {
             Studio temps réel
           </span>
           <span className="meta-rule" aria-hidden="true" />
-          <span className="meta-model">{raw ? 'Modèle importé' : 'Sculpture de référence'}</span>
+          <span className="meta-model">{raw ? 'Modèle importé' : 'Sculpture MakeHuman'}</span>
         </div>
 
         <div className="topbar-actions">
@@ -299,13 +465,11 @@ export default function App() {
 
       <main className="stage" ref={mountRef}>
         <div className="stage-head">
-          <p className="eyebrow">
-            Vue {String(viewIndex).padStart(2, '0')} / 04
-          </p>
+          <p className="eyebrow">Vue {String(viewIndex).padStart(2, '0')} / 04</p>
           <p className="stage-title">{VIEW_LABEL[view]}</p>
         </div>
 
-        <div className="stage-tag">{raw ? 'Fichier externe' : 'Sculpture figée'}</div>
+        <div className="stage-tag">{raw ? 'Modèle importé · paramétrable' : 'Sculpture paramétrable'}</div>
 
         <div className="dock" role="toolbar" aria-label="Contrôles de la scène">
           <div className="segmented" role="group" aria-label="Points de vue">
@@ -340,18 +504,16 @@ export default function App() {
               <span>Rotation</span>
             </button>
 
-            {!raw && (
-              <button
-                type="button"
-                className={`tool ${wire ? 'is-on' : ''}`}
-                aria-pressed={wire}
-                onClick={() => setWire((v) => !v)}
-                title="Afficher le maillage (M)"
-              >
-                <IconMesh />
-                <span>Maillage</span>
-              </button>
-            )}
+            <button
+              type="button"
+              className={`tool ${wire ? 'is-on' : ''}`}
+              aria-pressed={wire}
+              onClick={() => setWire((v) => !v)}
+              title="Afficher le maillage (M)"
+            >
+              <IconMesh />
+              <span>Maillage</span>
+            </button>
 
             <button
               type="button"
@@ -371,7 +533,7 @@ export default function App() {
         {!built && !error && (
           <div className="loader" role="status" aria-live="polite">
             <span className="loader-ring" aria-hidden="true" />
-            <span>Sculpture du corps…</span>
+            <span>{switching ? 'Chargement du modèle…' : 'Sculpture du corps…'}</span>
           </div>
         )}
 
@@ -396,15 +558,38 @@ export default function App() {
         <div className="panel-inner">
           <p className="eyebrow">{raw ? 'Fichier importé' : 'Profil de référence'}</p>
           <h1>
-            {raw ? 'Votre' : 'L’athlète'}
+            {raw ? 'Grey' : 'L’athlète'}
             <br />
-            <em>{raw ? 'modèle' : 'sec'}</em>
+            <em>{raw ? 'Adonis' : 'sec'}</em>
           </h1>
           <p className="lede">
             {raw
-              ? 'Fichier 3D externe affiché tel quel, avec la matière argile du studio. Sa pose et ses proportions d’origine sont conservées.'
-              : 'Silhouette en V, taille marquée, musculature sèche. Un profil figé pour étudier le volume, la posture et les proportions.'}
+              ? 'Le fichier téléchargé, débarrassé de son socle et rendu paramétrable. Bougez les curseurs : la statue se déforme en direct.'
+              : 'Silhouette en V, taille marquée, musculature sèche. Les curseurs pilotent le morphing du maillage MakeHuman.'}
           </p>
+
+          <div className="model-switch" role="group" aria-label="Modèle affiché">
+            <button
+              type="button"
+              className={raw ? 'is-on' : ''}
+              aria-pressed={raw}
+              disabled={switching}
+              onClick={() => switchModel('modele.glb')}
+            >
+              Adonis
+              <small>importé</small>
+            </button>
+            <button
+              type="button"
+              className={!raw ? 'is-on' : ''}
+              aria-pressed={!raw}
+              disabled={switching}
+              onClick={() => switchModel('body.glb')}
+            >
+              Référence
+              <small>MakeHuman</small>
+            </button>
+          </div>
 
           {metrics ? (
             <div className="metrics">
@@ -418,7 +603,7 @@ export default function App() {
               <div className="metric">
                 <span>Masse grasse</span>
                 <b>
-                  {fr(FIXED_PARAMS.fat, 0)}
+                  {fr(params.fat, 0)}
                   <small>%</small>
                 </b>
               </div>
@@ -430,7 +615,7 @@ export default function App() {
                 </b>
               </div>
               <div className="metric">
-                <span>Taille</span>
+                <span>Tour de taille</span>
                 <b>
                   {fr(metrics.waist, 0)}
                   <small>cm</small>
@@ -455,33 +640,92 @@ export default function App() {
             <div className="empty">
               <p>Métriques indisponibles</p>
               <span>
-                Ce fichier externe n’a pas la topologie du modèle de référence : il est affiché
-                tel quel, sans estimation de volume.
+                Ce fichier n’a pas un maillage unique : il est affiché tel quel, sans estimation
+                de volume.
               </span>
             </div>
           )}
 
-          {metrics && (
-            <section className="block">
-              <div className="block-head">
-                <h2>Développement</h2>
-                <span>0 — 100</span>
+          <section className="block controls">
+            <div className="block-head">
+              <h2>Réglage</h2>
+              <button type="button" className="reset" onClick={reset}>
+                Réinitialiser
+              </button>
+            </div>
+
+            <div className="presets">
+              {(Object.keys(PRESETS) as (keyof typeof PRESETS)[]).map((name) => (
+                <button key={name} type="button" onClick={() => applyPreset(name)}>
+                  {name === 'sec'
+                    ? 'Sec'
+                    : name === 'athletique'
+                      ? 'Athlétique'
+                      : name === 'bodybuilder'
+                        ? 'Bodybuilder'
+                        : 'Massif'}
+                </button>
+              ))}
+            </div>
+
+            <div className="slider">
+              <div className="slider-head">
+                <label htmlFor="s-height">Hauteur</label>
+                <b>
+                  {params.height}
+                  <small>cm</small>
+                </b>
               </div>
-              <div className="morpho">
-                {MORPHO.map((m) => (
-                  <div className="morpho-row" key={m.label}>
-                    <div className="morpho-label">
-                      <span>{m.label}</span>
-                      <b>{m.value}</b>
+              <input
+                id="s-height"
+                type="range"
+                min={150}
+                max={200}
+                step={1}
+                value={params.height}
+                onChange={(e) => change({ height: Number(e.target.value) })}
+                style={{ '--fill': `${heightPct}%` } as CSSProperties}
+              />
+            </div>
+
+            {GROUPS.map((g) => (
+              <div className="control-group" key={g.title}>
+                <h3>{g.title}</h3>
+                {g.sliders.map((s) => {
+                  const value = params[s.key]
+                  const pct = ((value - s.min) / (s.max - s.min)) * 100
+                  return (
+                    <div className="slider" key={s.key}>
+                      <div className="slider-head">
+                        <label htmlFor={`s-${s.key}`}>{s.label}</label>
+                        <b>
+                          {value}
+                          {s.unit ? <small>{s.unit}</small> : null}
+                        </b>
+                      </div>
+                      <input
+                        id={`s-${s.key}`}
+                        type="range"
+                        min={s.min}
+                        max={s.max}
+                        step={1}
+                        value={value}
+                        onChange={(e) =>
+                          change({ [s.key]: Number(e.target.value) } as Partial<BodyParams>)
+                        }
+                        style={{ '--fill': `${pct}%` } as CSSProperties}
+                      />
                     </div>
-                    <div className="track" aria-hidden="true">
-                      <i style={{ width: `${m.value}%` }} />
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
-            </section>
-          )}
+            ))}
+
+            <p className="control-note">
+              Les curseurs agissent sur la morphologie. Les mesures sont estimées à partir du
+              volume du maillage déformé.
+            </p>
+          </section>
 
           <section className="block file-block">
             <div className="file-head">
@@ -489,7 +733,7 @@ export default function App() {
                 <p className="eyebrow">Fichier 3D</p>
                 <strong>{raw ? source : 'statue.glb'}</strong>
                 <span>
-                  {raw ? 'Modèle importé' : 'MakeHuman · CC0'}
+                  {raw ? (source.includes('modele') ? 'Meshy AI · importé' : 'Modèle importé') : 'MakeHuman · CC0'}
                   {fileSize ? ` · ${fileSize}` : ''}
                 </span>
               </div>
@@ -529,6 +773,10 @@ export default function App() {
                 Il sera centré, mis à l’échelle et posé sur le socle automatiquement.
               </p>
               <p>
+                Pour les modèles avec socle, <code>scripts/prep-external.py</code> le cache sous le
+                sol et normalise le corps.
+              </p>
+              <p>
                 Base mesh masculin CC0 prêt à télécharger :{' '}
                 <a href={BASE_MESH_URL} target="_blank" rel="noreferrer">
                   Innerscene <IconArrow />
@@ -538,9 +786,8 @@ export default function App() {
           </details>
 
           <p className="footnote">
-            {raw
-              ? 'Fichier externe : aucune mesure n’est calculée. Rendu temps réel · Three.js.'
-              : 'Mesures estimées à partir du volume du maillage. Rendu temps réel · Three.js.'}
+            {raw ? 'Modèle importé · morphologie éditable · ' : 'Mesures estimées · '}
+            Rendu temps réel · Three.js.
           </p>
         </div>
       </aside>

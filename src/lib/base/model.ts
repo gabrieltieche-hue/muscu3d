@@ -39,6 +39,8 @@ export interface LoadedBody {
   makehuman: boolean
   /** scène glTF complète : affichage brut d'un modèle externe */
   scene: THREE.Group
+  /** extras du fichier glTF (socle caché, provenance, cibles…) */
+  extras: Record<string, unknown>
 }
 
 /** Fichiers essayés dans l'ordre quand `?model=` n'est pas fourni. */
@@ -102,6 +104,7 @@ function extract(gltf: { scene: THREE.Group; userData: Record<string, unknown> }
     joints,
     makehuman: gltf.userData.targets === true,
     scene: gltf.scene,
+    extras: gltf.userData,
   }
 }
 
@@ -118,8 +121,8 @@ function queryModel(): string | null {
  * `?model=autre.glb` permet de tester un autre modèle sans recompiler ;
  * sans paramètre, `modele.glb` puis `modele.gltf` puis `body.glb`.
  */
-export function loadBodyModel(input?: string | string[]): Promise<LoadedBody> {
-  const requested = queryModel()
+export function loadBodyModel(input?: string | string[], ignoreQuery = false): Promise<LoadedBody> {
+  const requested = ignoreQuery ? null : queryModel()
   const urls = requested ? [requested] : input ? (Array.isArray(input) ? input : [input]) : DEFAULT_MODEL_FILES
   const key = urls.join('|')
 

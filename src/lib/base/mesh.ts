@@ -24,6 +24,11 @@ export interface BaseMesh {
 
 let cache: BaseMesh | null = null
 
+/** Vide le cache : indispensable quand on change de fichier modèle. */
+export function clearBaseMeshCache(): void {
+  cache = null
+}
+
 export function getBaseMesh(): BaseMesh {
   if (cache) return cache
   const m = getLoadedBody()

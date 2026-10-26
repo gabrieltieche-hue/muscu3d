@@ -395,7 +395,7 @@ export function getMasks(): Masks {
 // ---------------------------------------------------------------------------
 
 /** Volume signé (m³) d'un maillage fermé indexé. */
-function meshVolume(pos: Float32Array, indices: Uint16Array | Uint32Array): number {
+export function meshVolume(pos: Float32Array, indices: Uint16Array | Uint32Array): number {
   let v = 0
   for (let i = 0; i < indices.length; i += 3) {
     const a = indices[i] * 3
@@ -414,7 +414,7 @@ function meshVolume(pos: Float32Array, indices: Uint16Array | Uint32Array): numb
 }
 
 /** Périmètre d'une coupe (approché par tri angulaire autour du centre). */
-function slicePerimeter(
+export function slicePerimeter(
   pos: Float32Array,
   filter: (i: number) => boolean,
   center: THREE.Vector3,
@@ -488,7 +488,7 @@ function subdivLevel(): number {
 }
 
 /** Normales lissées d'un maillage indexé (sans allocation Three.js). */
-function computeNormals(pos: Float32Array, idx: Uint32Array): Float32Array {
+export function computeNormals(pos: Float32Array, idx: Uint32Array): Float32Array {
   const n = new Float32Array(pos.length)
   for (let t = 0; t < idx.length; t += 3) {
     const a = idx[t] * 3
