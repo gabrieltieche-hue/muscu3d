@@ -391,7 +391,9 @@ l'accordéon « Utiliser un autre modèle ».
 
 **5. Déploiement.** `vercel.json` (framework Vite, `npm run build`, `dist`,
 cache des polices et du GLB) et `.vercelignore`. Le build statique ne nécessite
-aucun serveur Node. Le site Freebuff Sites existant (`site.json`,
+aucun serveur Node. Déployé en production sur **<https://muscu3d.vercel.app>**
+(équipe Vercel `gabriels-projects-811a62ab`, projet `muscu3d`, CLI 65.2.0).
+Le site Freebuff Sites existant (`site.json`,
 `deploy/worker.js`) est mis à jour avec le même build.
 
 **6. Vérifications session 5.** `npx tsc --noEmit` ✅, `npm run build` ✅

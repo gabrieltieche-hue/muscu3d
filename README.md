@@ -6,6 +6,8 @@ affiché comme une **sculpture d'argile grise** dans une scène de studio.
 
 Aucun compte, aucun backend : React + Three.js, tout tourne dans le navigateur.
 
+**En ligne : <https://muscu3d.vercel.app>**
+
 ## Lancer
 
 ```bash
@@ -104,6 +106,7 @@ Build statique Vite (`dist/`), aucun serveur Node en production.
 ### Vercel
 
 `vercel.json` fixe le framework, le build et les en-têtes de cache.
+Production : **<https://muscu3d.vercel.app>** (équipe `gabriels-projects`).
 
 ```bash
 npx vercel --prod          # après connexion au compte Vercel
