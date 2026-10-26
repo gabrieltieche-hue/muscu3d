@@ -3,12 +3,15 @@
 > Ce fichier est destiné au **prochain agent IA** qui reprend le projet.
 > Il contient : le but du produit, l'état exact du code, ce qui a été fait, les bugs
 > connus et vérifiés, les pistes validées, et les recettes de l'environnement.
-> Dernière mise à jour : **2026-10-25 (session 4)**.
+> Dernière mise à jour : **2026-10-26 (session 5)**.
 > La session 3 a basculé le projet sur l'architecture **« modèle 3D en fichier »** :
 > le corps est un `.glb` chargé par `GLTFLoader`, plus une sculpture procédurale.
 > La session 4 a figé le modèle et poussé le rendu studio (fond uni, argile mate,
 > contre-jours, socle large, interface verrouillée) : lire **§1bis**, **§3.6** puis
 > **§3.7** avant de toucher au code.
+> La session 5 a refondu l'interface (galerie sombre, dock de vues, fiche profil),
+> exporté la sculpture en `public/statue.glb` et préparé le déploiement Vercel :
+> lire **§3.8**.
 > Langue de travail du projet : **français** (UI, code commenté, réponses).
 
 ---
@@ -149,7 +152,10 @@ Node ≥ 22. Pas de dépendance à un serveur.
 muscu3d/
   AGENTS.md                  ← ce fichier
   README.md
-  public/body.glb            ← ⭐ LE MODÈLE 3D DU CORPS (glTF binaire)
+  vercel.json                ← build Vite + en-têtes de cache Vercel
+  public/body.glb            ← ⭐ base MakeHuman CC0 (moteur complet)
+  public/statue.glb          ← ⭐ sculpture figée exportée (2,6 Mo), téléchargeable
+  public/fonts/              ← Inter + Instrument Serif (.woff2 auto-hébergées)
   docs/reference/ref-01..08-*.jpg   ← ⭐ LES 8 IMAGES DE RÉFÉRENCE
   docs/etat-2026-10-20/      ← captures de la session 2
   index.html, vite.config.ts, tsconfig.json, package.json
@@ -162,11 +168,14 @@ muscu3d/
     import-body.py     ← ⭐ import d'un modèle EXTERNE (.obj/.glb) → .glb
     shot.sh            ← capture headless (Chromium 125)
     calibrate.ts       ← mesures (poids, tours) sur plusieurs morphologies
+    export-statue.ts   ← ⭐ export navigateur de la sculpture en GLB statique
     dev/               ← scripts de diagnostic (voir §6)
   src/
-    App.tsx                  ← UI, état, persistance, deep links
-    styles.css               ← thème sombre
+    App.tsx                  ← ⭐ interface galerie, chargement, dock, fiche profil
+    styles.css               ← ⭐ direction artistique (encre, papier, vert acide)
+    fonts.css                ← @font-face auto-hébergées
     scene/viewer.ts          ← ⭐ scène studio Three.js (GTAO, ACES, ombres, socle)
+    lib/referenceProfile.ts  ← ⭐ profil figé, partagé UI + export GLB
     lib/body.ts              ← ⭐ moteur de morphing + anatomie + mesures
     lib/base/model.ts        ← ⭐ chargement du .glb (GLTFLoader)
     lib/base/mesh.ts         ← accès au mesh de base chargé
@@ -183,7 +192,8 @@ muscu3d/
 
 ### Git
 
-Dépôt local (pas de remote), identité `local@muscu3d` / `muscu3d`.
+Dépôt GitHub `gabrieltieche-hue/muscu3d` (remote `origin`, branche `main`).
+Les commits de la session 5 suivent `4749a9d`.
 Commits récents :
 
 ```
@@ -328,8 +338,10 @@ pas de filaire (le toggle est masqué). C'est le mode « mon modèle télécharg
   (x ≈ ±0,050), avec des rainures horizontales par colonne.
 
 **4. Interface figée (`src/App.tsx`).** `FIXED_PARAMS` (profil de référence) est la
-seule source : les 13 curseurs et les 4 profils types sont `disabled`, les modes
-actuel/cible et le `localStorage` ont été retirés. Les vues caméra, la rotation auto,
+seule source : les 13 curseurs et les 4 profils types étaient `disabled`, les modes
+actuel/cible et le `localStorage` ont été retirés. *(La session 5 a remplacé les
+curseurs morts par une fiche profil ; `FIXED_PARAMS` vit désormais dans
+`src/lib/referenceProfile.ts`.)* Les vues caméra, la rotation auto,
 le socle et le toggle filaire (modèle de référence) fonctionnent toujours. Les chips
 de mesures restent celles du profil figé. Un bandeau explique le verrouillage et
 comment déposer un `modele.glb`.
@@ -345,6 +357,47 @@ testé avec un GLB CC0 de 109k triangles (chargé, centré, posé), erreur propr
 de cibles de morphing. Le profil de référence reste le corps MakeHuman du dépôt :
 c'est lui qui ressemble le plus aux images. `README.md` a été réécrit (liens vers
 MakeHuman/MPFB, Blender Studio CC0, Innerscene CC0, Sketchfab CC-BY).
+
+### 3.8 — session 5 : refonte de l'interface, export GLB, Vercel
+
+**1. Interface entièrement refaite (`src/App.tsx`, `src/styles.css`).**
+Direction « galerie / atelier » : encre `#0a0a0b` et papier `#f4f1e9`, un seul
+accent vert acide `#d6ff4b`. En-tête fin, scène plein cadre, dock flottant
+(vues Face/Profil/Dos/3-4, rotation, maillage, socle), fiche latérale éditoriale
+(titres Instrument Serif, mesures en gros chiffres, barres de développement,
+fichier 3D, téléchargement). Les 13 curseurs et les 4 presets ont été retirés :
+plus aucun contrôle mort. Les vues s'animent en 620 ms (`camTween` dans
+`viewer.ts`), le socle est masquable (`setPedestalVisible`).
+
+**2. Polices auto-hébergées (`public/fonts`, `src/fonts.css`).** Inter (variable
+300–600) et Instrument Serif (normal + italique) sont servies par le site :
+plus de dépendance à Google Fonts, et le rendu est identique hors ligne. Le
+premier screenshot headless avait un texte invisible faute de police système :
+c'est cette absence qui a motivé l'auto-hébergement.
+
+**3. Export GLB (`scripts/export-statue.ts` → `public/statue.glb`).**
+`buildReferenceStatueGLB()` recharge le modèle, rejoue `buildBody(FIXED_PARAMS)`
+puis sérialise le groupe avec `GLTFExporter` (binaire, `onlyVisible`). Le
+fichier fait 2,6 Mo, s'ouvre dans Blender/three.js et correspond exactement à
+la statue affichée. Il ne contient plus les cibles de morphing. Le bouton
+« Télécharger le GLB » et la fiche pointent dessus.
+
+**4. Modèle 3D : décision honnête.** La recherche n'a trouvé aucun GLB gratuit
+de bodybuilder parfait, sans compte et redistribuable. Les options utiles sont
+le base mesh CC0 d'Innerscene (4,3 Mo, A-pose, moins musclé que la référence)
+et le bundle CC0 Blender Studio (`.blend` à exporter). La sculpture du dépôt
+reste donc le modèle principal ; les liens sources sont dans le README et dans
+l'accordéon « Utiliser un autre modèle ».
+
+**5. Déploiement.** `vercel.json` (framework Vite, `npm run build`, `dist`,
+cache des polices et du GLB) et `.vercelignore`. Le build statique ne nécessite
+aucun serveur Node. Le site Freebuff Sites existant (`site.json`,
+`deploy/worker.js`) est mis à jour avec le même build.
+
+**6. Vérifications session 5.** `npx tsc --noEmit` ✅, `npm run build` ✅
+(bundle 1,71 Mo, avertissement de taille non bloquant), captures Chromium
+1440×900 et 390×844, export GLB relu dans l'app via `?model=statue.glb`,
+`Content-Type: model/gltf-binary` et `Content-Length` corrects.
 
 ## 4. Bugs connus, causes identifiées
 
@@ -519,6 +572,9 @@ Ordre imposé par l'utilisateur — **ne pas sauter d'étape** :
   (cibles .target → `targets.ts`).
 - `src/lib/base/pose.ts` : transport d'avant-bras, pose des doigts, rotation de jambe.
 - `src/lib/body.ts` : squelette logiciel, poids de peau, masques, morphing, mesures.
+- Session 5 : refonte UI (`App.tsx`, `styles.css`), polices auto-hébergées,
+  `src/lib/referenceProfile.ts`, `scripts/export-statue.ts` → `public/statue.glb`,
+  `vercel.json` + `.vercelignore`, captures desktop/mobile.
 - `src/lib/base/details.ts` : anatomie gravée (torse, dos, jambes, bras).
 - `src/lib/base/genitals.ts` : génitaux procéduraux (resculptés en session 3).
 - `src/lib/base/bump.ts` : bump map des abdominaux + grain de cuir rasé.

@@ -124,6 +124,17 @@ export class Viewer {
   private gtao: GTAOPass
   private key: THREE.DirectionalLight
   private clock = new THREE.Clock()
+  /** socle + ombre de contact, masquables depuis l'interface */
+  private floor = new THREE.Group()
+  /** transition douce entre deux points de vue */
+  private camTween: {
+    p0: THREE.Vector3
+    p1: THREE.Vector3
+    t0: THREE.Vector3
+    t1: THREE.Vector3
+    start: number
+    duration: number
+  } | null = null
 
   constructor(container: HTMLElement) {
     this.container = container
@@ -235,7 +246,6 @@ export class Viewer {
     )
     pedestal.position.y = -0.022
     pedestal.receiveShadow = true
-    this.scene.add(pedestal)
 
     // Biseau supérieur : un second disque très fin, plus clair, qui capte la
     // lumière et dessine l'arête du socle comme sur la référence.
@@ -245,7 +255,6 @@ export class Viewer {
     )
     bevel.position.y = 0.0015
     bevel.receiveShadow = true
-    this.scene.add(bevel)
 
     // --- ombre de contact (assombrit le socle sous les pieds) ---
     const contact = new THREE.Mesh(
@@ -259,7 +268,10 @@ export class Viewer {
     )
     contact.position.set(0, 0.0045, 0.01)
     contact.renderOrder = 1
-    this.scene.add(contact)
+
+    // socle + ombre de contact regroupés : un seul interrupteur
+    this.floor.add(pedestal, bevel, contact)
+    this.scene.add(this.floor)
 
     this.scene.add(this.pivot)
 
@@ -333,6 +345,17 @@ export class Viewer {
 
   private animate = () => {
     this.raf = requestAnimationFrame(this.animate)
+
+    // transition de caméra (les boutons de vue ne « sautent » plus)
+    if (this.camTween) {
+      const { p0, p1, t0, t1, start, duration } = this.camTween
+      const k = Math.min(1, (performance.now() - start) / duration)
+      const e = 1 - Math.pow(1 - k, 3)
+      this.camera.position.lerpVectors(p0, p1, e)
+      this.controls.target.lerpVectors(t0, t1, e)
+      if (k >= 1) this.camTween = null
+    }
+
     this.controls.update()
     this.grade.uniforms.uTime.value = this.clock.getElapsedTime()
     this.composer.render()
@@ -388,21 +411,33 @@ export class Viewer {
     this.controls.autoRotate = v
   }
 
+  /** Affiche ou masque le socle et son ombre de contact. */
+  setPedestalVisible(v: boolean) {
+    this.floor.visible = v
+  }
+
   setCameraPreset(p: 'face' | 'profil' | 'dos' | 'troisquarts') {
-    const target = new THREE.Vector3(0, 0.9, 0)
+    // Cadrage : le corps entier doit rester au-dessus du dock de contrôle.
+    const target = new THREE.Vector3(0, 0.92, 0)
     const pos = {
-      face: new THREE.Vector3(0, 0.98, 4.55),
-      profil: new THREE.Vector3(4.55, 0.98, 0),
-      dos: new THREE.Vector3(0, 0.98, -4.55),
-      troisquarts: new THREE.Vector3(3.4, 1.2, 2.9),
+      face: new THREE.Vector3(0, 1.0, 5.35),
+      profil: new THREE.Vector3(5.35, 1.0, 0),
+      dos: new THREE.Vector3(0, 1.0, -5.35),
+      troisquarts: new THREE.Vector3(4.05, 1.25, 3.45),
     }[p]
-    this.camera.position.copy(pos)
-    this.controls.target.copy(target)
-    this.controls.update()
+    this.camTween = {
+      p0: this.camera.position.clone(),
+      p1: pos,
+      t0: this.controls.target.clone(),
+      t1: target,
+      start: performance.now(),
+      duration: 620,
+    }
   }
 
   /** Outil de dev : caméra libre via query string (?cam=x,y,z&target=x,y,z). */
   setCameraPosition(px: number, py: number, pz: number, tx: number, ty: number, tz: number) {
+    this.camTween = null
     this.camera.position.set(px, py, pz)
     this.controls.target.set(tx, ty, tz)
     this.controls.update()
