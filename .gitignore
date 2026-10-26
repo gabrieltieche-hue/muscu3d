@@ -24,3 +24,4 @@ shots/
 
 # Captures de vérification (générées)
 /artifacts/
+.vercel
