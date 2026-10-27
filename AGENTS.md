@@ -468,6 +468,18 @@ tablette, ouvrir **`?stats=1`** : le HUD doit afficher un `fps` proche de 60
 pendant une rotation et `repos` à l'arrêt. Si le niveau descend à `q1`/`q0`,
 c'est que le GPU ne suit pas — `?q=0` donne le maximum de fluidité.
 
+**Mise en ligne (2026-10-27)** : commit `78d2718` poussé sur `origin/main`
+(réseau GitHub) ; déploiement Vercel `dpl_TWrFNKpEe9NTV61eAFHd5kVhBn2Q`
+(`READY`, cible production), alias **<https://muscu3d.vercel.app>**. Contrôle :
+le `index.html` de production référence bien `assets/index-CJBxJ7rh.js`, le
+même fichier que `dist/` local. Commande utilisée (le jeton est lu depuis
+`/root/.config/snowball-pro/vercel_token`, jamais en clair) :
+
+```bash
+VERCEL_TOKEN=$(tr -d '\r\n' < /root/.config/snowball-pro/vercel_token) \
+  npx --yes vercel deploy --prod --yes --token "$VERCEL_TOKEN"
+```
+
 ## 4. Bugs connus, causes identifiées
 
 ### 4.1 ⚠️ Le mesh de base n'est plus embarqué
