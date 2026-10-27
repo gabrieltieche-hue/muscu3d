@@ -5,7 +5,6 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
-import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js'
 
 /**
  * Scène studio : rendu de « statue de plâtre » — fond neutre dégradé, socle
@@ -57,6 +56,30 @@ const GradeShader = {
     }
   `,
 }
+
+/**
+ * Niveaux de qualité graphique.
+ *
+ * Le coût du rendu est **dominé par le remplissage** : GTAO, MSAA et le tone
+ * mapping travaillent par pixel. Sur une tablette (GPU mobile, DPR 2,5), le
+ * budget de pixels est donc le premier levier de fluidité — bien avant la
+ * géométrie, qui n'est que de 53 k sommets.
+ *
+ * `dpr` = plafond du ratio de pixels ; `samples` = échantillons du GTAO.
+ * Le viewer descend d'un niveau tout seul si les images s'allongent, et
+ * remonte si la marge est confortable. `?q=0..3` force un niveau.
+ */
+const QUALITY = [
+  { dpr: 1.0, samples: 8 },
+  { dpr: 1.25, samples: 12 },
+  { dpr: 1.5, samples: 16 },
+  { dpr: 2.0, samples: 16 },
+] as const
+
+const clampTier = (n: number) => Math.max(0, Math.min(QUALITY.length - 1, Math.round(n)))
+
+/** Résolution du pass d'occlusion ambiante (0,5 = demi-résolution). */
+const AO_SCALE = 0.5
 
 /** Environnement studio : 3 boîtes à lumière + un fond dégradé. */
 function studioEnvironment(renderer: THREE.WebGLRenderer): THREE.Texture {
@@ -120,10 +143,45 @@ export class Viewer {
   private container: HTMLElement
   private composer: EffectComposer
   private grade: ShaderPass
-  private smaa: SMAAPass
   private gtao: GTAOPass
   private key: THREE.DirectionalLight
   private clock = new THREE.Clock()
+
+  // --- réglage automatique de la qualité / rendu à la demande ---
+  /** niveau courant de QUALITY */
+  private tier: number
+  /** `?q=n` : niveau forcé (aucun ajustement automatique) */
+  private forcedTier: number | null = null
+  /** rien n'a bougé : on ne redessine pas (GPU au repos, pas de chauffe) */
+  private needsRender = true
+  /** écarts entre deux images *effectivement rendues* */
+  private frameDeltas: number[] = []
+  private lastFrameAt = 0
+  /** une image a été sautée (rien à dessiner) depuis le dernier rendu */
+  private skippedSinceRender = true
+  private lastQualityChange = 0
+  private startedAt = performance.now()
+  /** dernières durées d'image (affichage fps du mode `?stats=1`) */
+  private recent: number[] = []
+  private statT0 = performance.now()
+  private statsEl: HTMLDivElement | null = null
+  private onVisibility = () => {
+    if (!document.hidden) this.invalidate()
+  }
+
+  /** Demande une nouvelle image : le rendu n'a lieu que si quelque chose bouge. */
+  private invalidate = () => {
+    this.needsRender = true
+  }
+
+  /** Redessine (géométrie modifiée de l'extérieur, ex. curseurs de la statue). */
+  refresh() {
+    this.invalidate()
+  }
+
+  /** Nombre d'images réellement rendues (diagnostic `?stats=1`). */
+  renderCount = 0
+
   /** socle + ombre de contact, masquables depuis l'interface */
   private floor = new THREE.Group()
   /** transition douce entre deux points de vue */
@@ -139,18 +197,29 @@ export class Viewer {
   constructor(container: HTMLElement) {
     this.container = container
 
+    const qs = new URLSearchParams(typeof location !== 'undefined' ? location.search : '')
+    const forced = qs.get('q')
+    this.forcedTier = forced !== null && Number.isFinite(Number(forced)) ? clampTier(Number(forced)) : null
+    // Départ volontairement prudent (DPR 1,5) : on laisse la machine prouver
+    // qu'elle suit, puis la qualité remonte toute seule image par image.
+    this.tier = this.forcedTier ?? 2
+
     this.renderer = new THREE.WebGLRenderer({
       antialias: false,
       powerPreference: 'high-performance',
       stencil: false,
     })
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, QUALITY[this.tier].dpr))
     this.renderer.setSize(container.clientWidth || 800, container.clientHeight || 600)
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 0.98
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = THREE.PCFShadowMap
+    // La statue et les lumières ne bougent pas : la carte d'ombre (2048²) est
+    // calculée une fois par changement de modèle, pas à chaque image.
+    this.renderer.shadowMap.autoUpdate = false
+    this.renderer.shadowMap.needsUpdate = true
     container.appendChild(this.renderer.domElement)
 
     // Fond gris neutre UNI (référence studio) : pas de dégradé, pas de ciel.
@@ -179,6 +248,8 @@ export class Viewer {
     this.controls.minPolarAngle = 0.25
     this.controls.autoRotateSpeed = 1.0
     this.controls.update()
+    // Rendu à la demande : chaque rotation, zoom ou inertie redessine la scène.
+    this.controls.addEventListener('change', this.invalidate)
 
     // --- éclairage studio (trois points + ambiance) ---
     // Ambiance : débouche les creux (aisselles, entrejambe, sous le socle)
@@ -279,14 +350,27 @@ export class Viewer {
     const size = this.renderer.getDrawingBufferSize(new THREE.Vector2())
     const target = new THREE.WebGLRenderTarget(size.x, size.y, {
       type: THREE.HalfFloatType,
-      samples: 4, // MSAA multi-échantillonné
+      samples: 4, // MSAA : c'est lui qui lisse les arêtes (plus de SMAA, redondant)
     })
     this.composer = new EffectComposer(this.renderer, target)
     this.composer.addPass(new RenderPass(this.scene, this.camera))
 
     // Occlusion ambiante : c'est elle qui creuse les plis (aisselles, entre-
     // jambes, sous les pectoraux) et qui donne le relief « sculpture ».
-    this.gtao = new GTAOPass(this.scene, this.camera, size.x, size.y)
+    //
+    // Elle est calculée en DEMI-résolution : l'AO est une information basse
+    // fréquence, l'agrandissement bilinéaire est invisible, et le coût du pass
+    // (le plus cher de la chaîne : normales + profondeur + 2 passes de
+    // débruitage) est divisé par quatre.
+    this.gtao = new GTAOPass(
+      this.scene,
+      this.camera,
+      Math.max(2, Math.round(size.x * AO_SCALE)),
+      Math.max(2, Math.round(size.y * AO_SCALE)),
+    )
+    const aoSetSize = this.gtao.setSize.bind(this.gtao)
+    this.gtao.setSize = (w: number, h: number) =>
+      aoSetSize(Math.max(2, Math.round(w * AO_SCALE)), Math.max(2, Math.round(h * AO_SCALE)))
     this.gtao.output = GTAOPass.OUTPUT.Default
     this.gtao.blendIntensity = 1.15
     this.gtao.updateGtaoMaterial({
@@ -294,7 +378,7 @@ export class Viewer {
       distanceExponent: 1.0,
       thickness: 0.4,
       scale: 1.1,
-      samples: 16,
+      samples: QUALITY[this.tier].samples,
       distanceFallOff: 1.0,
       screenSpaceRadius: false,
     })
@@ -304,13 +388,13 @@ export class Viewer {
     this.grade = new ShaderPass(GradeShader)
     this.composer.addPass(this.grade)
 
-    this.smaa = new SMAAPass()
-    this.composer.addPass(this.smaa)
-
     this.composer.addPass(new OutputPass())
 
     this.ro = new ResizeObserver(() => this.resize())
     this.ro.observe(container)
+    document.addEventListener('visibilitychange', this.onVisibility)
+    this.resize()
+    this.buildStats()
     this.animate()
   }
 
@@ -335,16 +419,90 @@ export class Viewer {
     const w = this.container.clientWidth
     const h = this.container.clientHeight
     if (w < 2 || h < 2) return
+    const dpr = Math.min(window.devicePixelRatio || 1, QUALITY[this.tier].dpr)
     this.camera.aspect = w / h
     this.camera.updateProjectionMatrix()
+    this.renderer.setPixelRatio(dpr)
     this.renderer.setSize(w, h)
+    this.composer.setPixelRatio(dpr)
     this.composer.setSize(w, h)
-    const size = this.renderer.getDrawingBufferSize(new THREE.Vector2())
-    this.gtao.setSize(size.x, size.y)
+    // le GTAO a son propre setSize (demi-résolution) : voir l'override plus haut
+    this.invalidate()
+  }
+
+  /** Applique un niveau de qualité (résolution + échantillons d'occlusion). */
+  private setQuality(tier: number) {
+    const next = clampTier(tier)
+    if (next === this.tier) return
+    this.tier = next
+    this.lastQualityChange = performance.now()
+    this.frameDeltas.length = 0
+    this.gtao.updateGtaoMaterial({ samples: QUALITY[this.tier].samples })
+    this.resize()
+    this.updateStats(true)
+  }
+
+  /**
+   * Régulation automatique : on regarde la médiane des durées d'image
+   * *rendues* (les pauses de rendu à la demande sont ignorées).
+   * Descente au-delà de 26 ms (≈38 fps), remontée sous 11 ms (≈90 fps),
+   * avec 2,5 s d'hystérésis entre deux changements.
+   */
+  private trackFrame(dt: number) {
+    if (dt <= 0 || dt > 250) return // image perdue (onglet caché, build) : ignorée
+    this.recent.push(dt)
+    if (this.recent.length > 24) this.recent.shift()
+    if (performance.now() - this.startedAt < 1500) return // chauffe
+    this.frameDeltas.push(dt)
+    if (this.frameDeltas.length < 40) return
+
+    this.frameDeltas.sort((a, b) => a - b)
+    const med = this.frameDeltas[this.frameDeltas.length >> 1]
+    this.frameDeltas.length = 0
+    if (this.forcedTier !== null) return
+    if (performance.now() - this.lastQualityChange < 2500) return
+
+    if (med > 26 && this.tier > 0) this.setQuality(this.tier - 1)
+    else if (med < 11 && this.tier < QUALITY.length - 1) this.setQuality(this.tier + 1)
+  }
+
+  /** Petit afficheur `?stats=1` : fps, niveau, ratio, taille du tampon. */
+  private buildStats() {
+    if (new URLSearchParams(location.search).get('stats') !== '1') return
+    const el = document.createElement('div')
+    el.style.cssText =
+      'position:absolute;top:12px;left:12px;z-index:9;padding:6px 9px;border-radius:7px;' +
+      'background:rgba(6,6,7,.72);color:#d6ff4b;font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;' +
+      'pointer-events:none;white-space:pre;letter-spacing:.02em'
+    el.textContent = 'mesure…'
+    this.container.appendChild(el)
+    this.statsEl = el
+    this.statT0 = performance.now()
+    // accès de diagnostic depuis la console : window.__viewer.renderCount
+    ;(window as unknown as { __viewer?: Viewer }).__viewer = this
+  }
+
+  private updateStats(force = false) {
+    if (!this.statsEl) return
+    const now = performance.now()
+    if (!force && now - this.statT0 < 500) return
+    const s = this.renderer.getDrawingBufferSize(new THREE.Vector2())
+    const idle = now - this.lastFrameAt > 900
+    let head = 'repos'
+    if (!idle && this.recent.length > 0) {
+      const sorted = [...this.recent].sort((a, b) => a - b)
+      head = `fps ${(1000 / sorted[sorted.length >> 1]).toFixed(0)}`
+    }
+    const text = `${head} · q${this.tier}/${QUALITY.length - 1} · dpr ${
+      this.renderer.getPixelRatio()
+    } · ${s.x}×${s.y}`
+    if (this.statsEl.textContent !== text) this.statsEl.textContent = text
+    this.statT0 = now
   }
 
   private animate = () => {
     this.raf = requestAnimationFrame(this.animate)
+    this.updateStats()
 
     // transition de caméra (les boutons de vue ne « sautent » plus)
     if (this.camTween) {
@@ -354,11 +512,29 @@ export class Viewer {
       this.camera.position.lerpVectors(p0, p1, e)
       this.controls.target.lerpVectors(t0, t1, e)
       if (k >= 1) this.camTween = null
+      this.needsRender = true
     }
 
+    // OrbitControls signale ses mouvements par l'événement « change »,
+    // qui pose needsRender (rotation, inertie, molette, auto-rotation).
     this.controls.update()
+
+    if (!this.needsRender) {
+      this.skippedSinceRender = true
+      return
+    }
+    this.needsRender = false
+
+    const now = performance.now()
+    // On ne mesure que des images *consécutives* : après une pause à la
+    // demande, l'écart n'a rien à voir avec la vitesse de la carte.
+    if (!this.skippedSinceRender && this.lastFrameAt > 0) this.trackFrame(now - this.lastFrameAt)
+    this.skippedSinceRender = false
+    this.lastFrameAt = now
+
     this.grade.uniforms.uTime.value = this.clock.getElapsedTime()
     this.composer.render()
+    this.renderCount++
   }
 
   setBody(group: THREE.Group) {
@@ -370,6 +546,9 @@ export class Viewer {
       this.pivot.remove(child)
     }
     this.pivot.add(group)
+    // la statue change : la carte d'ombre doit être recalculée une fois
+    this.renderer.shadowMap.needsUpdate = true
+    this.invalidate()
   }
 
   /**
@@ -386,7 +565,10 @@ export class Viewer {
         if (m.geometry) m.geometry.dispose()
       })
     }
-    if (!joints) return
+    if (!joints) {
+      this.invalidate()
+      return
+    }
     const g = new THREE.Group()
     g.name = '__joints'
     const geo = new THREE.SphereGeometry(0.012, 12, 8)
@@ -399,21 +581,26 @@ export class Viewer {
       g.add(s)
     }
     this.pivot.add(g)
+    this.invalidate()
   }
 
   setWireframeVisible(v: boolean) {
     this.pivot.traverse((o) => {
       if (o.userData.isWire) o.visible = v
     })
+    this.invalidate()
   }
 
   setAutoRotate(v: boolean) {
     this.controls.autoRotate = v
+    this.invalidate()
   }
 
   /** Affiche ou masque le socle et son ombre de contact. */
   setPedestalVisible(v: boolean) {
     this.floor.visible = v
+    this.renderer.shadowMap.needsUpdate = true
+    this.invalidate()
   }
 
   setCameraPreset(p: 'face' | 'profil' | 'dos' | 'troisquarts') {
@@ -441,11 +628,17 @@ export class Viewer {
     this.camera.position.set(px, py, pz)
     this.controls.target.set(tx, ty, tz)
     this.controls.update()
+    this.invalidate()
   }
 
   dispose() {
     cancelAnimationFrame(this.raf)
     this.ro.disconnect()
+    this.controls.removeEventListener('change', this.invalidate)
+    document.removeEventListener('visibilitychange', this.onVisibility)
+    this.statsEl?.remove()
+    const w = window as unknown as { __viewer?: Viewer }
+    if (w.__viewer === this) delete w.__viewer
     this.controls.dispose()
     this.composer.dispose()
     this.pivot.traverse((o) => {

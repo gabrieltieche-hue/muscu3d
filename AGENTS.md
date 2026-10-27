@@ -3,7 +3,7 @@
 > Ce fichier est destiné au **prochain agent IA** qui reprend le projet.
 > Il contient : le but du produit, l'état exact du code, ce qui a été fait, les bugs
 > connus et vérifiés, les pistes validées, et les recettes de l'environnement.
-> Dernière mise à jour : **2026-10-26 (session 5)**.
+> Dernière mise à jour : **2026-10-27 (session 6)**.
 > La session 3 a basculé le projet sur l'architecture **« modèle 3D en fichier »** :
 > le corps est un `.glb` chargé par `GLTFLoader`, plus une sculpture procédurale.
 > La session 4 a figé le modèle et poussé le rendu studio (fond uni, argile mate,
@@ -400,6 +400,73 @@ Le site Freebuff Sites existant (`site.json`,
 (bundle 1,71 Mo, avertissement de taille non bloquant), captures Chromium
 1440×900 et 390×844, export GLB relu dans l'app via `?model=statue.glb`,
 `Content-Type: model/gltf-binary` et `Content-Length` corrects.
+
+### 3.9 — session 6 : fluidité sur tablette (2026-10-27)
+
+> ⚠️ Ce document s'arrête à la session 5, mais le dépôt va plus loin
+> (commit `936a100`) : le modèle affiché est `public/modele.glb` (alias
+> `meshy-adonis.glb`, « Grey Adonis »), **paramétrable** — `buildParametricStatue`
+> dans `src/lib/statue.ts`, curseurs et presets réactivés dans `App.tsx`.
+> Les §3.7 et §3.8 décrivent donc l'interface *précédente*.
+
+Constat utilisateur : « le site lag, c'est lent et ça lag ». Trois causes
+mesurées, aucune n'était la géométrie (26 581 sommets) :
+
+**1. Le rendu tournait en continu, même à l'arrêt.** `animate()` appelait
+`composer.render()` à chaque image ; le GPU restait à 100 %, chauffait et
+faisait throttler la tablette. Désormais **rendu à la demande** : un drapeau
+`needsRender` (`invalidate()`), alimenté par l'événement `change` d'OrbitControls
+(rotation, inertie, molette, auto-rotation), par les transitions de caméra, par
+les changements de modèle/réglages et par `visibilitychange`. À l'arrêt :
+**0 image rendue** (mesuré). `Viewer.refresh()` sert aux changements de
+géométrie faits de l'extérieur (curseurs).
+
+**2. Le coût était dans le remplissage.** À DPR 2 + 1,45 Mpx, la chaîne
+GTAO (plein écran, 16 échantillons + débruitage) + **SMAA** + MSAA 4 + tone
+mapping dominait tout.
+- **SMAA supprimé** : redondant avec le MSAA 4 du `WebGLRenderTarget`.
+- **GTAO en demi-résolution** (`AO_SCALE = 0.5`, override de `setSize`) : l'AO
+  est basse fréquence, l'upscale bilinéaire est invisible ; coût ÷ 4.
+- **Carte d'ombre statique** : `shadowMap.autoUpdate = false` +
+  `needsUpdate` sur `setBody` / `setPedestalVisible` (plus de passe 2048² par
+  image pour une statue immobile).
+- **Qualité adaptative** (`QUALITY` dans `viewer.ts`) : 4 niveaux de DPR
+  (1,0 / 1,25 / 1,5 / 2,0) et d'échantillons AO (8 / 12 / 16 / 16). Départ au
+  niveau 2 (DPR 1,5), descente si la médiane des images rendues dépasse 26 ms,
+  remontée sous 11 ms, 2,5 s d'hystérésis. **`?q=0..3`** force un niveau,
+  **`?stats=1`** affiche `fps|repos · q · dpr · taille du tampon` et expose
+  `window.__viewer.renderCount`.
+
+**3. Le CSS floutait le canvas en continu.** Le dock, la pastille de titre, le
+loader et l'overlay utilisaient `backdrop-filter: blur(...)` **au-dessus du
+canvas WebGL** : le compositeur devait relire et flouter la scène à chaque
+image — très cher sur GPU mobile. Remplacés par des fonds opaques (aucune
+différence visible sur fond gris). **Ne jamais réintroduire de
+`backdrop-filter` au-dessus de `.stage canvas`.**
+
+**4. Curseurs.** `statue.update()` coûte ~9 ms (médiane, mesuré sur cette
+machine avec `scripts/dev/perf-statue.ts`) : 26 k sommets + normales +
+`measure()`. Les événements d'un glissement rapide s'empilaient ; ils sont
+maintenant **coalescés à une mise à jour par image** (`requestAnimationFrame`
+dans `App.tsx`) et suivis d'un `viewer.refresh()`.
+
+**Mesures** (Chromium 125 headless, rendu logiciel llvmpipe — donc pessimiste) :
+
+| scénario | avant | après |
+|---|---|---|
+| 900×700, DPR 1 | 972 ms/image (1 fps) | **16,9 ms/image (59 fps)** |
+| 800×600, DPR 2 | (non mesurable : > 1 s) | **16,7 ms/image (60 fps)** |
+| à l'arrêt | rendu continu | **0 rendu / 3 s** |
+
+**Vérifications** : `npx tsc --noEmit` ✅, `npm run build` ✅ (1,66 Mo),
+captures 1280×800 DPR 2 et 900×760 (corps à 38 % de masse grasse après
+glissement du curseur : l'image se met bien à jour), 0 rendu en veille.
+
+**Limite honnête** : le rendu final n'a pas pu être mesuré sur le GPU Mali de
+la tablette (le Chromium de cette machine n'a que le rendu logiciel). Sur la
+tablette, ouvrir **`?stats=1`** : le HUD doit afficher un `fps` proche de 60
+pendant une rotation et `repos` à l'arrêt. Si le niveau descend à `q1`/`q0`,
+c'est que le GPU ne suit pas — `?q=0` donne le maximum de fluidité.
 
 ## 4. Bugs connus, causes identifiées
 

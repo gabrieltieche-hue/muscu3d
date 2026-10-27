@@ -202,6 +202,7 @@ export default function App() {
   const pedestalRef = useRef(pedestal)
   const paramsRef = useRef(params)
   const timerRef = useRef<number | null>(null)
+  const frameRef = useRef<number | null>(null)
   const lastBuildRef = useRef(0)
   wireRef.current = wire
   pedestalRef.current = pedestal
@@ -297,7 +298,18 @@ export default function App() {
     if (!model) return
 
     if (!model.makehuman) {
-      if (statueRef.current) setMetrics(statueRef.current.update(params))
+      // Modèle paramétrable : une mise à jour du maillage coûte ~9 ms. On la
+      // coalesce à une par image (les événements d'un glissement rapide
+      // s'empileraient sinon) et on redemande un rendu : la scène est en
+      // rendu à la demande, elle ne se redessine pas toute seule.
+      if (!statueRef.current || frameRef.current !== null) return
+      frameRef.current = requestAnimationFrame(() => {
+        frameRef.current = null
+        const statue = statueRef.current
+        if (!statue) return
+        setMetrics(statue.update(paramsRef.current))
+        viewerRef.current?.refresh()
+      })
       return
     }
 
@@ -373,10 +385,11 @@ export default function App() {
     }
   }, [downloadHref])
 
-  // 9. nettoyage du minuteur de reconstruction.
+  // 9. nettoyage du minuteur de reconstruction et de l'image différée.
   useEffect(
     () => () => {
       if (timerRef.current !== null) clearTimeout(timerRef.current)
+      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current)
     },
     [],
   )
